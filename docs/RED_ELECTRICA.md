@@ -97,9 +97,32 @@ PNT = Pérdidas_totales − Pérdidas_técnicas
   puesto y penaliza por baja confiabilidad de la zona (una unidad con score alto en
   una zona cuyo balance cierra es más probable un problema de datos, no hurto).
 
+## Capacidades avanzadas
+
+- **Monte Carlo (`losses/montecarlo.py`)**: propaga la incertidumbre de P0/Pk,
+  factor de carga, atributos de conductor y longitud para reportar pérdidas
+  técnicas y PNT con **P10/P50/P90**. La pérdida en vacío se perturba solo por
+  P0/Pk (no por factor de carga).
+- **Validación del flujo (`powerflow/validation.py`)**: compara el motor de
+  barrido contra un caso radial de **solución analítica cerrada** (`3·I²·R`) con
+  tolerancia estrecha (`ptnt validar-flujo`). Los casos IEEE 13/34/123 completos
+  requieren el motor trifásico desbalanceado (evolución).
+- **Exportador OpenDSS (`powerflow/opendss_export.py`)**: genera un `.dss`
+  completo (`Circuit`, `LineCode`, `Line`, `Transformer`, `Load`) para validación
+  cruzada y análisis de detalle.
+- **Motor de reglas de calidad (`quality/rules.py`)**: R05 (conductor ausente),
+  R09 (ampacidad), R11 (longitud), R12 (sin conductor), R15 (asignación),
+  R22 (isla), R24/P01 (unidades), P09 (kVA declarado vs capacidad).
+- **Señales de red (`ntl/network_signals.py`)**: N1 (residuo de zona),
+  N3 (balance de totalizador, la más limpia), N4 (cargabilidad incoherente).
+- **Exportadores (`io/exporters.py`)**: XLSX/CSV y **reporte ejecutivo HTML**
+  autocontenido por alimentador.
+
 ## Pruebas
 
 `tests/unit/test_topology.py`, `test_powerflow.py`, `test_losses.py`,
-`test_balance_lighting_grid.py` y la integración `tests/integration/test_grid_pipeline.py`,
-que verifica que el balance cierra (`pérdidas = entrada − facturado − AP − propios − ENS`)
-y que `PNT = pérdidas_total − técnicas`.
+`test_balance_lighting_grid.py`, `test_risk.py`, `test_advanced.py` (Monte Carlo,
+reglas, OpenDSS, validación, señales de red, reporte) y la integración
+`tests/integration/test_grid_pipeline.py`, que verifica que el balance cierra
+(`pérdidas = entrada − facturado − AP − propios − ENS`) y que
+`PNT = pérdidas_total − técnicas`.

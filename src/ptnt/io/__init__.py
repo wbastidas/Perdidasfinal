@@ -5,6 +5,11 @@ from ptnt.io.commercial_parser import (
     ConsumoLargo,
     parse_commercial_csv,
 )
+from ptnt.io.exporters import (
+    executive_report_html,
+    export_tables_xlsx,
+    write_executive_report,
+)
 from ptnt.io.sources import SourceConnector, SourceError, build_connector
 
 __all__ = [
@@ -14,4 +19,7 @@ __all__ = [
     "parse_commercial_csv",
     "ConsumoLargo",
     "CommercialParseError",
+    "export_tables_xlsx",
+    "executive_report_html",
+    "write_executive_report",
 ]

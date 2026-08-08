@@ -20,6 +20,7 @@ from ptnt.load.demand import velander_max_demand
 from ptnt.losses.conductors import segment_loss_kwh
 from ptnt.losses.factors import loss_factor
 from ptnt.losses.meters import meter_losses_kwh
+from ptnt.losses.montecarlo import montecarlo_losses, montecarlo_ntl
 from ptnt.losses.transformers import BankConfig, bank_capacity_kva, transformer_unit_loss_kwh
 from ptnt.powerflow.bfs import run_powerflow
 from ptnt.ref.catalogs import load_conductor_catalog, load_transformer_catalog
@@ -35,6 +36,12 @@ class GridResult:
     powerflow_converged: bool
     v_min_pu: float
     hours_period: float
+    loss_technical_p10: float = 0.0
+    loss_technical_p50: float = 0.0
+    loss_technical_p90: float = 0.0
+    ntl_p10: float = 0.0
+    ntl_p50: float = 0.0
+    ntl_p90: float = 0.0
     metrics: dict = field(default_factory=dict)
 
 
@@ -153,6 +160,20 @@ def run_grid_analysis(
         energy_coverage_pct=100.0,
     )
 
+    # --- Monte Carlo: bandas P10/P50/P90 de pérdidas técnicas y PNT ---
+    mc = cfg.perdidas.monte_carlo
+    dist = montecarlo_losses(
+        loss_conductors_kwh, loss_tx_kwh, loss_tx_noload_kwh, loss_meters_kwh,
+        iterations=mc.iteraciones_n1, seed=mc.semilla,
+        unc_p0_pk_pct=mc.p0_pk_pct, unc_load_factor_pct=mc.factor_carga_pct,
+        unc_conductor_pct=mc.conductor_atributo_pct, unc_length_pct=mc.longitud_pct,
+    )
+    ntl_dist = montecarlo_ntl(
+        balance.e_input_kwh, balance.e_billed_kwh, balance.e_streetlight_unmetered_kwh,
+        balance.e_own_use_kwh, balance.e_not_supplied_kwh, dist,
+        iterations=mc.iteraciones_n1, seed=mc.semilla + 1,
+    )
+
     metrics = {
         "n_nodes": graph.n_nodes,
         "pf_converged": pf.converged,
@@ -161,8 +182,12 @@ def run_grid_analysis(
         "loss_factor": fp,
         "load_factor": fc,
         "loss_technical_kwh": loss_technical,
+        "loss_technical_p10": dist.p10,
+        "loss_technical_p90": dist.p90,
         "ntl_kwh": balance.ntl_kwh,
         "ntl_pct": balance.ntl_pct,
+        "ntl_p10": ntl_dist.p10,
+        "ntl_p90": ntl_dist.p90,
         "balance_type": balance.balance_type.value,
     }
 
@@ -174,5 +199,11 @@ def run_grid_analysis(
         powerflow_converged=pf.converged,
         v_min_pu=pf.v_min_pu,
         hours_period=hours_period,
+        loss_technical_p10=dist.p10,
+        loss_technical_p50=dist.p50,
+        loss_technical_p90=dist.p90,
+        ntl_p10=ntl_dist.p10,
+        ntl_p50=ntl_dist.p50,
+        ntl_p90=ntl_dist.p90,
         metrics=metrics,
     )

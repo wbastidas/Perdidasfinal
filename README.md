@@ -61,7 +61,8 @@ ptnt servir-visor       # visor de solo lectura  -> http://127.0.0.1:8080
 | `ptnt probar-fuentes` | Prueba la conectividad de todas las bases de origen |
 | `ptnt generar-sinteticos` | Genera un CSV comercial sintético con hurtos conocidos |
 | `ptnt analizar` | Pipeline comercial: promedio → potencia → reconciliación → hurto |
-| `ptnt analizar-red` | Pipeline de red: topología → flujo → pérdidas técnicas → balance y PNT |
+| `ptnt analizar-red` | Pipeline de red: topología → flujo → pérdidas (con Monte Carlo P10/P50/P90) → balance y PNT; genera reporte ejecutivo HTML, `.dss` OpenDSS y reglas de calidad |
+| `ptnt validar-flujo` | Valida el motor de flujo contra casos radiales de solución analítica |
 | `ptnt dashboard` | Tablero de análisis (Streamlit) |
 | `ptnt servir-visor` | Visor web de solo lectura (FastAPI) |
 | `ptnt crear-usuario` | Alta de usuario para las interfaces (solo hash) |
@@ -102,11 +103,12 @@ src/ptnt/
 │   └── scoring.py             # consenso + ranking
 ├── ref/          # catálogos: conductores, transformadores
 ├── topology/     # grafo radial + trazas + zonas (E4)
-├── powerflow/    # flujo de potencia backward-forward sweep (E8.1)
-├── losses/       # pérdidas técnicas: factor, conductores, trafos, medidores (E8)
+├── powerflow/    # flujo BFS + exportador OpenDSS + validación (E8.1)
+├── losses/       # pérdidas técnicas + Monte Carlo P10/P50/P90 (E8)
 ├── lighting/     # alumbrado público (E7)
 ├── balance/      # balance jerárquico y PNT + controles C01-C06 (E9)
 ├── grid/         # cargabilidad, desbalance de fases, riesgo multinivel (E10)
+├── quality/      # reconciliación (§6.1) + motor de reglas R05/R09/R11/R12/R15/R22/R24/P01/P09 (E5)
 ├── store/        # DuckDB (schema.sql) + persistencia
 ├── security/     # auth (hash), secretos por entorno
 ├── synth/        # generador de datos (comercial + red radial) con hurtos
@@ -142,7 +144,11 @@ por configuración, medidores), alumbrado público con exclusión por medición,
 balance jerárquico MEDIDO/INDICATIVO con controles C01–C06, cargabilidad y
 desbalance de fases (`ptnt analizar-red`).
 
-Quedan como evolución del motor: flujo trifásico desbalanceado con neutro
-explícito, validación IEEE 13/34/123, Monte Carlo P10/P50/P90 y exportador
-OpenDSS. El esquema de base de datos (`src/ptnt/store/schema.sql`) ya soporta
-estos resultados.
+Incluye además: **Monte Carlo** de pérdidas y PNT (bandas P10/P50/P90),
+**motor de reglas de calidad** de datos (§E5), **exportador OpenDSS** (`.dss`),
+**validación del flujo** contra casos radiales de solución analítica cerrada,
+**señales de red** N1/N3/N4, y **exportadores** (XLSX/CSV y reporte ejecutivo HTML).
+
+Queda como evolución del motor: flujo **trifásico desbalanceado con neutro
+explícito** y la validación IEEE 13/34/123 completa (requiere ese motor). El
+esquema de base de datos (`src/ptnt/store/schema.sql`) ya soporta estos resultados.

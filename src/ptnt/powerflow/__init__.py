@@ -7,5 +7,14 @@ extensión trifásica desbalanceada con neutro queda como evolución del motor).
 """
 
 from ptnt.powerflow.bfs import PowerFlowResult, run_powerflow
+from ptnt.powerflow.opendss_export import export_to_dss, write_dss
+from ptnt.powerflow.validation import ValidationCase, run_validation_suite
 
-__all__ = ["run_powerflow", "PowerFlowResult"]
+__all__ = [
+    "run_powerflow",
+    "PowerFlowResult",
+    "export_to_dss",
+    "write_dss",
+    "run_validation_suite",
+    "ValidationCase",
+]

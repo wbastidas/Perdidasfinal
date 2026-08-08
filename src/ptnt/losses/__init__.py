@@ -11,6 +11,11 @@ Componentes:
 from ptnt.losses.conductors import segment_loss_kwh, segment_loss_peak_kw
 from ptnt.losses.factors import loss_factor, resistance_at_temp
 from ptnt.losses.meters import meter_losses_kwh
+from ptnt.losses.montecarlo import (
+    LossDistribution,
+    montecarlo_losses,
+    montecarlo_ntl,
+)
 from ptnt.losses.transformers import (
     BankConfig,
     bank_capacity_kva,
@@ -26,4 +31,7 @@ __all__ = [
     "bank_capacity_kva",
     "BankConfig",
     "meter_losses_kwh",
+    "montecarlo_losses",
+    "montecarlo_ntl",
+    "LossDistribution",
 ]

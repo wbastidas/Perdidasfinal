@@ -175,8 +175,10 @@ def analizar_red(
     console.print(f"  Entrada (cabecera): {b.e_input_kwh:,.0f} kWh")
     console.print(f"  Facturado:          {b.e_billed_kwh:,.0f} kWh")
     console.print(f"  Alumbrado público:  {b.e_streetlight_unmetered_kwh:,.0f} kWh")
-    console.print(f"  Pérdidas técnicas:  {b.loss_technical_kwh:,.0f} kWh")
-    console.print(f"  [bold]PNT:               {b.ntl_kwh:,.0f} kWh ({b.ntl_pct:.1f}%)[/]")
+    console.print(f"  Pérdidas técnicas:  {b.loss_technical_kwh:,.0f} kWh "
+                  f"(P10–P90: {res.loss_technical_p10:,.0f}–{res.loss_technical_p90:,.0f})")
+    console.print(f"  [bold]PNT:               {b.ntl_kwh:,.0f} kWh ({b.ntl_pct:.1f}%)"
+                  f"  P10–P90: {res.ntl_p10:,.0f}–{res.ntl_p90:,.0f} kWh[/]")
 
     tabla = Table(title="Pérdidas técnicas por componente")
     tabla.add_column("Componente")
@@ -227,7 +229,56 @@ def analizar_red(
         tl.to_parquet(salidas / "cargabilidad.parquet", index=False)
     except Exception:  # pragma: no cover - pyarrow opcional
         tl.to_csv(salidas / "cargabilidad.csv", index=False)
-    console.print(f"[green]✓[/] Resultados de red en {salidas}/balance_red.json")
+
+    # Motor de reglas de calidad sobre la red
+    from ptnt.quality.rules import run_quality_rules
+    from ptnt.ref.catalogs import load_conductor_catalog
+    from ptnt.topology.graph import build_radial_graph
+
+    cond = load_conductor_catalog(cfg.catalogos.conductores)
+    graph = build_radial_graph(net.model)
+    qr = run_quality_rules(graph, cond, cfg)
+    if qr.findings:
+        console.print(f"\n[bold]Calidad de datos:[/] {len(qr.findings)} hallazgos "
+                      f"por regla {qr.by_rule()}")
+
+    # Reporte ejecutivo HTML + exportador OpenDSS
+    from ptnt.io.exporters import write_executive_report
+    from ptnt.powerflow.opendss_export import write_dss
+
+    write_executive_report(res.feeder_code, balance_dict, str(salidas / "reporte_ejecutivo.html"))
+    write_dss(net.model, cond, str(salidas / f"{res.feeder_code}.dss"))
+    console.print(f"[green]✓[/] Resultados de red en {salidas}/ "
+                  f"(balance_red.json, reporte_ejecutivo.html, {res.feeder_code}.dss)")
+
+
+@app.command()
+def validar_flujo(
+    tolerancia_pct: float = typer.Option(2.0, "--tol"),
+    config: str = _CONFIG_OPT,
+):
+    """Valida el motor de flujo de potencia contra casos radiales de solución
+    analítica cerrada (fallo si el error supera la tolerancia)."""
+
+    from ptnt.powerflow.validation import run_validation_suite
+
+    _cargar(config)
+    casos = run_validation_suite(tol_pct=tolerancia_pct)
+    tabla = Table(title="Validación del flujo de potencia")
+    tabla.add_column("Caso")
+    tabla.add_column("Esperado kW", justify="right")
+    tabla.add_column("Calculado kW", justify="right")
+    tabla.add_column("Error %", justify="right")
+    tabla.add_column("Estado")
+    todos_ok = True
+    for c in casos:
+        estado = "[green]PASA[/]" if c.passed else "[red]FALLA[/]"
+        todos_ok &= c.passed
+        tabla.add_row(c.name, f"{c.loss_kw_expected:.4f}", f"{c.loss_kw_computed:.4f}",
+                      f"{c.error_pct:.3f}", estado)
+    console.print(tabla)
+    if not todos_ok:
+        raise typer.Exit(code=1)
 
 
 @app.command()

@@ -299,6 +299,16 @@ class CatalogosConfig(_Strict):
 # ---------------------------------------------------------------------------
 # Pérdidas técnicas (§8)
 # ---------------------------------------------------------------------------
+class MonteCarloConfig(_Strict):
+    iteraciones_n1: int = Field(200, ge=10)
+    iteraciones_n3: int = Field(1000, ge=10)
+    semilla: int = 20260807
+    p0_pk_pct: float = 15.0
+    factor_carga_pct: float = 20.0
+    conductor_atributo_pct: float = 10.0
+    longitud_pct: float = 5.0
+
+
 class PerdidasConfig(_Strict):
     # Factor de pérdidas F_p = k·Fc + (1-k)·Fc²
     k_por_tipo_alimentador: dict[str, float] = Field(
@@ -324,6 +334,7 @@ class PerdidasConfig(_Strict):
             "_default": 1.0,
         }
     )
+    monte_carlo: MonteCarloConfig = Field(default_factory=MonteCarloConfig)
 
 
 # ---------------------------------------------------------------------------

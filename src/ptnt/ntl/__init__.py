@@ -6,6 +6,12 @@ razones activas y su evidencia. Ninguna señal individual es concluyente; el val
 predictivo está en la coincidencia de varias.
 """
 
+from ptnt.ntl.network_signals import (
+    NetworkSignal,
+    n1_zone_balance_residual,
+    n3_totalizer_balance,
+    n4_loading_incoherence,
+)
 from ptnt.ntl.scoring import NtlRanking, score_customers
 from ptnt.ntl.signals import (
     SignalResult,
@@ -17,4 +23,8 @@ __all__ = [
     "SignalResult",
     "score_customers",
     "NtlRanking",
+    "NetworkSignal",
+    "n1_zone_balance_residual",
+    "n3_totalizer_balance",
+    "n4_loading_incoherence",
 ]
