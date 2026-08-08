@@ -257,6 +257,16 @@ def analizar_red(
         "ntl_pct": b.ntl_pct,
         "loss_components": res.loss_components_kwh,
         "controls_triggered": [c.code for c in b.controls if c.triggered],
+        "ap_unmetered_kwh": res.ap_unmetered_kwh,
+        "loss_neutral_kwh": res.loss_neutral_kwh,
+        "imbalance_pct_max": res.imbalance_pct_max,
+        "engine": res.engine,
+        "loss_technical_p10": res.loss_technical_p10,
+        "loss_technical_p90": res.loss_technical_p90,
+        "ntl_p10": res.ntl_p10,
+        "ntl_p90": res.ntl_p90,
+        "totalizer_signals": res.totalizer_signals,
+        "n_lv_zones": len(res.lv_zones),
         "metrics": res.metrics,
     }
     (salidas / "balance_red.json").write_text(

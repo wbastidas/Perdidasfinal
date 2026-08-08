@@ -50,6 +50,17 @@ def generate_radial_network(
     source = "SRC"
     prev = source
     billed_total = 0.0
+    switch_nodes: dict[str, dict] = {}
+    capacitor_nodes: dict[str, dict] = {}
+    pole_nodes: dict[str, dict] = {}
+    traffic_light_nodes: dict[str, list[dict]] = {}
+    # Cabecera del alimentador: PuestoProteccionDinamico fuente (§ cabecera)
+    feeder_head = {
+        "protection_id": f"{feeder_code}-PPD",
+        "circuit_source_guid": f"CS-{feeder_code}",
+        "is_source": True,
+        "type": "Cabecera Alimentador",
+    }
 
     for t in range(n_transformers):
         mt_node = f"MT{t}"
@@ -104,6 +115,48 @@ def generate_radial_network(
             for k in range(2)
         ]
 
+        # seccionador en el nodo MT (dispositivo de maniobra)
+        switch_nodes[mt_node] = {
+            "switch_id": f"SW{t}", "type": "PuestoSeccionador",
+            "normal_pos": "CERRADO",
+        }
+        # poste en el nodo MT
+        pole_nodes[mt_node] = {"pole_id": f"POO{t}", "type": "Hormigón"}
+
+        # en un puesto: banco de capacitores; en otro: edificio con totalizador;
+        # en otro: semáforo/cámara
+        if t == 1:
+            capacitor_nodes[mt_node] = {"cap_id": f"CAP{t}", "kvar": 300.0}
+        if t == 2 and n_cli >= 3:
+            # edificio multifamiliar: totalizador + 3 individuales bajo él
+            edificio = f"BLDG{t}"
+            edges.append(Edge(
+                segment_id=f"segBLD{t}", from_node=lv_bus, to_node=edificio,
+                conductor_code=lv_conductor, length_km=0.01, n_phases=3,
+                voltage_v=lv_voltage_v, is_lv=True,
+            ))
+            tot_kwh = 900.0
+            billed_total += tot_kwh
+            customer_nodes.setdefault(edificio, []).append({
+                "customer_id": f"{feeder_code}-{t}-TOT", "energy_kwh": tot_kwh,
+                "phase": 3, "tariff": "BT Comercial", "meter_type": "Electrónico",
+                "totalizador": True,
+            })
+            for k in range(3):
+                customer_nodes[edificio].append({
+                    "customer_id": f"{feeder_code}-{t}-U{k}", "energy_kwh": 250.0,
+                    "phase": int(rng.integers(1, 4)), "tariff": "BT Residencial",
+                    "meter_type": "Electrónico", "is_under_totalizer": True,
+                })
+        if t == 3:
+            traffic_light_nodes[lv_bus] = [
+                {"streetlight_id": f"SEM{t}", "structure_code": "CSP0007",
+                 "lamp_w": 50.0, "hours": 24.0, "days_month": 30, "is_metered": False,
+                 "kind": "SEMAFORO"},
+                {"streetlight_id": f"CAM{t}", "lamp_w": 15.0, "hours": 24.0,
+                 "days_month": 30, "is_metered": False, "kind": "CAMARA"},
+            ]
+
     model = NetworkModel(
         feeder_code=feeder_code,
         source_node=source,
@@ -112,6 +165,11 @@ def generate_radial_network(
         transformer_sites=transformer_sites,
         customer_nodes=customer_nodes,
         streetlight_nodes=streetlight_nodes,
+        traffic_light_nodes=traffic_light_nodes,
+        switch_nodes=switch_nodes,
+        capacitor_nodes=capacitor_nodes,
+        pole_nodes=pole_nodes,
+        feeder_head=feeder_head,
     )
 
     # Cabecera = facturado / (1 - fracción_pnt) => inyecta PNT conocida

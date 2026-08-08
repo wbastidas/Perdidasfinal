@@ -60,7 +60,7 @@ ptnt = "ptnt.cli:app"
 where = ["src"]
 
 [tool.setuptools.package-data]
-ptnt = ["store/schema.sql", "config/*.yaml"]
+ptnt = ["store/schema.sql", "config/*.yaml", "ref/catalogo_estructura.csv"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

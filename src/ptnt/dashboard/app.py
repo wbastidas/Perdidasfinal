@@ -49,6 +49,42 @@ def _load_outputs(salidas: str) -> dict:
     return data
 
 
+def _inject_theme() -> None:
+    """Estilo visual: tipografía, tarjetas de métricas y encabezado con degradado."""
+
+    st.markdown(
+        """
+        <style>
+          .stApp { background: #0b1220; }
+          .block-container { padding-top: 1.2rem; max-width: 1250px; }
+          h1, h2, h3 { color: #e2e8f0; letter-spacing: -0.01em; }
+          /* Métricas como tarjetas */
+          div[data-testid="stMetric"] {
+            background: linear-gradient(160deg,#1e293b 0%,#172033 100%);
+            border: 1px solid #334155; border-radius: 14px;
+            padding: 14px 18px; box-shadow: 0 2px 10px rgba(0,0,0,.25);
+          }
+          div[data-testid="stMetricValue"] { color: #38bdf8; font-weight: 700; }
+          div[data-testid="stMetricLabel"] { color: #94a3b8; }
+          .ptnt-hero {
+            background: linear-gradient(110deg,#0ea5e9 0%,#2563eb 55%,#7c3aed 100%);
+            border-radius: 16px; padding: 20px 26px; margin-bottom: 18px;
+            color: white; box-shadow: 0 6px 24px rgba(37,99,235,.35);
+          }
+          .ptnt-hero h1 { color:white; margin:0; font-size:1.5rem; }
+          .ptnt-hero p { color: #e0f2fe; margin:.3rem 0 0; font-size:.9rem; }
+          .stTabs [data-baseweb="tab-list"] { gap: 4px; }
+          .stTabs [data-baseweb="tab"] {
+            background:#1e293b; border-radius:10px 10px 0 0; padding:8px 16px;
+          }
+          .stTabs [aria-selected="true"] { background:#2563eb; color:white; }
+          .stDataFrame { border:1px solid #334155; border-radius:10px; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _check_auth(cfg) -> bool:
     """Autenticación simple usuario/contraseña contra el almacén de usuarios."""
 
@@ -80,6 +116,7 @@ def main() -> None:
     cfg = load_config(args.config)
     st.set_page_config(page_title="PTNT-BAL", layout="wide", page_icon="⚡")
 
+    _inject_theme()
     if not _check_auth(cfg):
         return
 
@@ -94,7 +131,16 @@ def main() -> None:
     ranking = data["ranking_clientes"]
     met = data.get("metricas", {})
 
-    st.title("⚡ PTNT-BAL — Análisis de consumo y detección de hurto")
+    st.markdown(
+        f"""
+        <div class="ptnt-hero">
+          <h1>⚡ PTNT-BAL — Pérdidas No Técnicas y Balance Energético</h1>
+          <p>Unidad de negocio {met.get('unidad_negocio', cfg.proyecto.unidad_negocio)} ·
+             Análisis de consumo multi-mes, recálculo de potencia y detección de hurto</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     # -- Portada / línea base ------------------------------------------------
     c1, c2, c3, c4 = st.columns(4)
@@ -187,8 +233,17 @@ def main() -> None:
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Entrada (cabecera)", f"{bal.get('e_input_kwh',0):,.0f} kWh")
             c2.metric("Facturado", f"{bal.get('e_billed_kwh',0):,.0f} kWh")
-            c3.metric("Pérdidas técnicas", f"{bal.get('loss_technical_kwh',0):,.0f} kWh")
-            c4.metric("PNT", f"{bal.get('ntl_kwh',0):,.0f} kWh ({bal.get('ntl_pct',0):.1f}%)")
+            c3.metric("Pérdidas técnicas", f"{bal.get('loss_technical_kwh',0):,.0f} kWh",
+                      help=f"P10–P90: {bal.get('loss_technical_p10',0):,.0f}–{bal.get('loss_technical_p90',0):,.0f}")
+            c4.metric("PNT", f"{bal.get('ntl_kwh',0):,.0f} kWh ({bal.get('ntl_pct',0):.1f}%)",
+                      help=f"P10–P90: {bal.get('ntl_p10',0):,.0f}–{bal.get('ntl_p90',0):,.0f} kWh")
+
+            c5, c6, c7 = st.columns(3)
+            c5.metric("Alumbrado público no medido", f"{bal.get('ap_unmetered_kwh',0):,.0f} kWh",
+                      help="Incluye luminarias, semáforos y cámaras (por regulación)")
+            c6.metric("Motor de flujo", bal.get("engine", "-"))
+            c7.metric("Zonas BT (por transformador)", bal.get("n_lv_zones", "-"))
+
             comp = bal.get("loss_components", {})
             if comp:
                 st.write("**Pérdidas técnicas por componente (kWh):**")
@@ -198,6 +253,12 @@ def main() -> None:
                 st.error(f"Controles de coherencia disparados: {', '.join(trig)}")
             else:
                 st.caption("Controles de coherencia C01–C06: todos OK")
+
+            # Señales N3 (balance de totalizador) — la señal de hurto más limpia
+            tot = bal.get("totalizer_signals", [])
+            if tot:
+                st.write("**Señal N3 — balance de totalizador (diferencia totalizador − individuales):**")
+                st.dataframe(pd.DataFrame(tot), use_container_width=True, hide_index=True)
 
 
 if __name__ == "__main__":  # pragma: no cover

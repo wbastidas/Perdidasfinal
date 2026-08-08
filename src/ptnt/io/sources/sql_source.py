@@ -21,6 +21,7 @@ _DIALECTOS = {
     TipoFuente.SQLSERVER: "mssql+pyodbc",
     TipoFuente.POSTGRES: "postgresql+psycopg2",
     TipoFuente.ORACLE: "oracle+oracledb",
+    TipoFuente.ORACLE_ARCSDE: "oracle+oracledb",
     TipoFuente.MYSQL: "mysql+pymysql",
 }
 
@@ -114,13 +115,24 @@ class SqlSource(SourceConnector):
     def read_table(
         self, tabla: str, columnas: list[str] | None = None, limite: int | None = None
     ) -> pd.DataFrame:
-        cols = ", ".join(columnas) if columnas else "*"
+        # ArcSDE/ST_Geometry: envolver la columna de geometría con SDE.ST_AsBinary
+        geom_col = self.fuente.st_geometry_cols.get(tabla)
+        if self.fuente.tipo == TipoFuente.ORACLE_ARCSDE and geom_col:
+            if columnas:
+                sel = ", ".join(c for c in columnas if c != geom_col)
+                cols = f"{sel}, SDE.ST_AsBinary({geom_col}) AS GEOM_WKB"
+            else:
+                cols = f"a.*, SDE.ST_AsBinary(a.{geom_col}) AS GEOM_WKB"
+        else:
+            cols = ", ".join(columnas) if columnas else "*"
         base = f"SELECT {cols} FROM {self._qualified(tabla)}"
+        if self.fuente.tipo == TipoFuente.ORACLE_ARCSDE and geom_col and not columnas:
+            base = f"SELECT {cols} FROM {self._qualified(tabla)} a"
         if limite:
             # TOP para SQL Server, LIMIT para el resto
             if self.fuente.tipo == TipoFuente.SQLSERVER:
                 base = f"SELECT TOP {int(limite)} {cols} FROM {self._qualified(tabla)}"
-            elif self.fuente.tipo == TipoFuente.ORACLE:
+            elif self.fuente.tipo in (TipoFuente.ORACLE, TipoFuente.ORACLE_ARCSDE):
                 base = f"{base} FETCH FIRST {int(limite)} ROWS ONLY"
             else:
                 base = f"{base} LIMIT {int(limite)}"

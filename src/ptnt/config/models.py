@@ -43,9 +43,11 @@ class TipoFuente(str, Enum):
     SQLSERVER = "sqlserver"
     POSTGRES = "postgres"
     ORACLE = "oracle"
+    ORACLE_ARCSDE = "oracle_arcsde"   # Oracle 11gR2 + ArcSDE (ST_Geometry)
     MYSQL = "mysql"
     DUCKDB = "duckdb"
     PARQUET = "parquet"
+    FGDB = "fgdb"                       # File Geodatabase de ArcGIS (OpenFileGDB)
 
 
 class FuenteConfig(_Strict):
@@ -68,14 +70,16 @@ class FuenteConfig(_Strict):
     password_env: str | None = None  # nombre de la variable de entorno
     dsn_env: str | None = None       # alternativa: cadena completa por env
     opciones: dict[str, str] = Field(default_factory=dict)
-    # Fuentes de archivo (csv/parquet/duckdb)
+    # Fuentes de archivo (csv/parquet/duckdb/fgdb)
     ruta: str | None = None
     # SSL/TLS
     requiere_ssl: bool = True
+    # ArcSDE/ST_Geometry: columnas de geometría a envolver con SDE.ST_AsBinary
+    st_geometry_cols: dict[str, str] = Field(default_factory=dict)  # tabla -> columna
 
     @model_validator(mode="after")
     def _validar_por_tipo(self) -> "FuenteConfig":
-        archivo = {TipoFuente.CSV, TipoFuente.PARQUET, TipoFuente.DUCKDB}
+        archivo = {TipoFuente.CSV, TipoFuente.PARQUET, TipoFuente.DUCKDB, TipoFuente.FGDB}
         if self.tipo in archivo:
             if not self.ruta:
                 raise ValueError(

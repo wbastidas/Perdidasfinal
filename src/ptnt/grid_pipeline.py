@@ -15,7 +15,6 @@ from loguru import logger
 from ptnt.balance.energy_balance import BalanceResult, compute_balance
 from ptnt.config.models import AppConfig
 from ptnt.grid.loadability import classify_loadability
-from ptnt.lighting.streetlight import compute_streetlight_energy
 from ptnt.load.demand import velander_max_demand
 from ptnt.losses.conductors import segment_loss_kwh
 from ptnt.losses.factors import loss_factor
@@ -41,6 +40,9 @@ class GridResult:
     imbalance_pct_max: float = 0.0
     engine: str = "1F_equivalente"
     opendss_comparison: dict = field(default_factory=dict)
+    lv_zones: dict = field(default_factory=dict)          # site_id -> resumen zona BT
+    totalizer_signals: list = field(default_factory=list)  # señales N3 por puesto
+    ap_unmetered_kwh: float = 0.0
     loss_technical_p10: float = 0.0
     loss_technical_p50: float = 0.0
     loss_technical_p90: float = 0.0
@@ -195,12 +197,31 @@ def run_grid_analysis(
              for cls in model.customer_nodes.values() for c in cls]
     loss_meters_kwh = meter_losses_kwh(tipos, hours_period, cfg.perdidas.watts_medidor)
 
-    # --- alumbrado público ---
-    lums = [l for cls in model.streetlight_nodes.values() for l in cls]
-    ap_unmetered = 0.0
-    if lums:
-        ap = compute_streetlight_energy(pd.DataFrame(lums), cfg.alumbrado)
-        ap_unmetered = ap.total_unmetered_kwh
+    # --- agregación de baja tensión al transformador (circuitsource) ---
+    # Suma clientes (respetando TOTALIZADOR), luminarias y semáforos/cámaras por
+    # puesto. Resuelve el salto MT→BT modelando cada puesto como zona BT lumped.
+    from ptnt.grid.lv_aggregation import aggregate_to_transformers
+    from ptnt.ref.structure_catalog import load_structure_catalog
+
+    try:
+        struct_cat = load_structure_catalog()
+    except FileNotFoundError:
+        struct_cat = None
+    zones = aggregate_to_transformers(graph, struct_cat)
+
+    # Alumbrado público no medido = luminarias + semáforos/cámaras (por regulación)
+    ap_unmetered = sum(z.energy_ap_unmetered_kwh for z in zones.values())
+    # Energía facturada agregada respetando totalizador (evita doble conteo)
+    e_billed = sum(z.energy_billed_kwh for z in zones.values())
+    # Clientes fuera de zonas trazadas (por si algún nodo no cuelga de un puesto)
+    nodos_en_zona = set()
+    for z in zones.values():
+        nodos_en_zona |= graph.trace_downstream(z.node)
+    for n, cls in model.customer_nodes.items():
+        if n not in nodos_en_zona:
+            e_billed += sum(
+                c["energy_kwh"] for c in cls if not c.get("is_under_totalizer")
+            )
 
     loss_technical = (
         loss_conductors_kwh + loss_tx_kwh + loss_meters_kwh
@@ -213,7 +234,6 @@ def run_grid_analysis(
     }
 
     # --- balance ---
-    e_billed = sum(c["energy_kwh"] for cls in model.customer_nodes.values() for c in cls)
     balance = compute_balance(
         model.feeder_code,
         cfg=cfg.balance,
@@ -264,6 +284,32 @@ def run_grid_analysis(
     if loss_neutral_kwh > 0:
         loss_components["NEUTRO"] = loss_neutral_kwh
 
+    # Señales N3 (balance de totalizador) por puesto con totalizador
+    from ptnt.ntl.network_signals import n3_totalizer_balance
+
+    totalizer_signals = []
+    for z in zones.values():
+        if z.energy_totalizer_kwh > 0:
+            sig = n3_totalizer_balance(
+                z.site_id, z.energy_totalizer_kwh,
+                z.energy_individuals_under_totalizer_kwh,
+            )
+            totalizer_signals.append({
+                "site_id": sig.entity_id, "signal": sig.signal_code,
+                "value": sig.value, "confidence": sig.confidence, **sig.evidence,
+            })
+
+    lv_zones = {
+        z.site_id: {
+            "customers": z.customers_count, "billed_kwh": z.energy_billed_kwh,
+            "ap_unmetered_kwh": z.energy_ap_unmetered_kwh,
+            "traffic_camera": z.traffic_camera_count,
+            "streetlights": z.streetlight_count,
+            "totalizer_residual_kwh": z.totalizer_residual_kwh,
+        }
+        for z in zones.values()
+    }
+
     return GridResult(
         feeder_code=model.feeder_code,
         balance=balance,
@@ -276,6 +322,9 @@ def run_grid_analysis(
         imbalance_pct_max=imbalance_pct_max,
         engine=engine,
         opendss_comparison=opendss_cmp,
+        lv_zones=lv_zones,
+        totalizer_signals=totalizer_signals,
+        ap_unmetered_kwh=ap_unmetered,
         loss_technical_p10=dist.p10,
         loss_technical_p50=dist.p50,
         loss_technical_p90=dist.p90,

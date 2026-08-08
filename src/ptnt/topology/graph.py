@@ -35,16 +35,31 @@ class Edge:
 
 @dataclass
 class NetworkModel:
-    """Modelo de red de un alimentador (nodos + tramos + cargas)."""
+    """Modelo de red de un alimentador (nodos + tramos + cargas).
+
+    Incluye las clases del modelo CNEL EP: transformadores, clientes, luminarias,
+    **semáforos/cámaras** (consumo no medido), **seccionadores/puestos de
+    protección**, **bancos de capacitores**, **postes** (estructura soporte) y la
+    **cabecera** (PuestoProteccionDinamico con CIRCUITSOURCEGUID).
+    """
 
     feeder_code: str
     source_node: str
     edges: list[Edge]
     feeder_type: str = "U"  # U=Urbano, R=Rural (parametriza k, LF)
-    # nodo -> lista de (customer_id, energy_kwh, phase, tariff)
-    transformer_sites: dict[str, dict] = field(default_factory=dict)  # node -> {site_id, kvas, config}
+    transformer_sites: dict[str, dict] = field(default_factory=dict)  # node -> {site_id, kvas, config, circuit_source_guid}
     customer_nodes: dict[str, list[dict]] = field(default_factory=dict)  # node -> [customers]
     streetlight_nodes: dict[str, list[dict]] = field(default_factory=dict)  # node -> [lights]
+    # Semáforos y cámaras: consumo de alumbrado público NO medido (por regulación)
+    traffic_light_nodes: dict[str, list[dict]] = field(default_factory=dict)  # node -> [semaforos/camaras]
+    # Dispositivos de maniobra / protección (seccionadores, PPD, PSF)
+    switch_nodes: dict[str, dict] = field(default_factory=dict)  # node -> {switch_id, type, normal_pos}
+    # Bancos de capacitores (corrección de factor de potencia)
+    capacitor_nodes: dict[str, dict] = field(default_factory=dict)  # node -> {cap_id, kvar}
+    # Postes / estructuras soporte (informativo, logística)
+    pole_nodes: dict[str, dict] = field(default_factory=dict)  # node -> {pole_id, type}
+    # Cabecera del alimentador (PuestoProteccionDinamico fuente)
+    feeder_head: dict = field(default_factory=dict)  # {protection_id, circuit_source_guid, is_source}
 
 
 class RadialGraph:

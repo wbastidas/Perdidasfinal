@@ -49,6 +49,26 @@ fuentes:
     password_env: "PTNT_SRC_SIG_PASS"
     requiere_ssl: true
 
+  # File Geodatabase de ArcGIS (red geométrica, ST_Geometry, EPSG:32717)
+  - nombre: "sig_fgdb"
+    tipo: "fgdb"
+    ruta: "/datos/GYE.gdb"
+
+  # Oracle 11gR2 + ArcSDE (geometrías ST_Geometry). Se envuelven con SDE.ST_AsBinary.
+  - nombre: "sig_oracle_sde"
+    tipo: "oracle_arcsde"
+    host: "srv-sde.cnel.local"
+    puerto: 1521
+    base_datos: "ORCL"           # SID / service name
+    esquema: "SDE"
+    usuario_env: "PTNT_SRC_SDE_USER"
+    password_env: "PTNT_SRC_SDE_PASS"
+    requiere_ssl: false
+    st_geometry_cols:
+      TRAMODISTRIBUCIONAEREO: "SHAPE"
+      PUESTOTRANSFDISTRIBUCION: "SHAPE"
+      PUNTOCARGA: "SHAPE"
+
   - nombre: "resultados_local"
     tipo: "duckdb"
     ruta: "data/ptnt.duckdb"

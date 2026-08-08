@@ -4,15 +4,70 @@ Documenta la vía de red del sistema: de la topología al balance de energía y 
 PNT. Se ejecuta con `ptnt analizar-red` (sobre red sintética) o desde
 `ptnt.grid_pipeline.run_grid_analysis` con un `NetworkModel` real.
 
+## Lectura de la File Geodatabase (ArcGIS) y ArcSDE
+
+La red se entrega como **File Geodatabase de ArcGIS Desktop** con la red
+geométrica `Electrico_RedGeom` y geometrías **ST_Geometry** (EPSG:32717):
+
+- **`io/sources/fgdb_source.py`** lee la `.gdb` con el driver **OpenFileGDB** de
+  GDAL vía `pyogrio`/`fiona` (sin licencia ArcGIS). Convierte la geometría a WKB +
+  centroide (x, y) y **verifica el CRS** (aborta si difiere en vez de reproyectar).
+- **Oracle 11gR2 + ArcSDE**: la fuente tipo `oracle_arcsde` envuelve las columnas
+  `ST_Geometry` con `SDE.ST_AsBinary(col) AS GEOM_WKB` (configurable por
+  `st_geometry_cols`), de modo que se leen como WKB sin dependencias de ArcObjects.
+
+La **conectividad eléctrica** NO se toma de la red geométrica de ArcGIS
+(descontinuada en ArcGIS Pro): se resuelve con `CIRCUITSOURCEGUID` /
+`PARENTCIRCUITSOURCEGUID` (ver abajo) y por topología propia (`ptnt.topology`).
+
+## Cabecera del alimentador (§ CircuitSource)
+
+La cabecera es un **`PuestoProteccionDinamico`** con `ANCILLARYROLE = Source (1)` y
+`CIRCUITSOURCEGUID` poblado (dominio *Cabecera Alimentador*), vinculado 1:1 a
+`CIRCUITOFUENTE`. El campo `PARENTCIRCUITSOURCEGUID`, estampado por el trace de
+ArcFM en cada elemento aguas abajo, indica **qué fuente lo energiza realmente**
+(según topología, no según `ALIMENTADORID`). El modelo canónico lo guarda en
+`NetworkModel.feeder_head`.
+
+## Catálogo de estructuras (`CATALOGOESTRUCTURA`)
+
+`ref/structure_catalog.py` carga la tabla maestra (Excel del cliente, incluida como
+`config/catalogo_estructura.csv`, 5661 códigos). El **prefijo** del `CODIGOESTRUCTURA`
+clasifica el elemento y da su potencia y pérdidas:
+
+| Prefijo | Elemento | Dato |
+|---|---|---|
+| TRT/TRR/TRV/TRS/TUT/TUV/TUS | Transformador | kVA (`POTENCIA`) + config de banco (descr.) |
+| APO/AOD/AOC | Alumbrado público | W lámpara + **W balastro** (`Perdidas`) + doble nivel |
+| CSP | **Semáforo / cámara** | W (consumo AP no medido) |
+| ECT/ECR | Capacitor | kVAR |
+| SP*/SS* | Seccionador / protección | — |
+| MED/MEC/MET | Medidor | — |
+| POO/TOO | Poste / torre | — |
+
+## Agregación de baja tensión al transformador (`grid/lv_aggregation.py`)
+
+Modelo LV open-source: cada elemento (cliente, luminaria, semáforo/cámara) se
+asigna a **su transformador** (el primer puesto aguas arriba, coherente con
+`PARENTCIRCUITSOURCEGUID`), y se agregan por puesto formando una **zona BT lumped**.
+Esto resuelve el salto MT→BT sin un flujo trifásico que cruce el transformador.
+Reglas:
+
+- **Totalizador (§7.5):** si un punto de carga tiene medidor `TOTALIZADOR`, su
+  energía es la del edificio; los individuales bajo él **no se re-suman** (evita
+  doble conteo). La diferencia `totalizador − Σ individuales` es la **señal N3**
+  (el balance de hurto más limpio).
+- **Semáforos y cámaras** se agregan al **AP no medido** de la zona, por regulación.
+
 ## Migración de datos (origen → canónico, §4)
 
 `io/migration.py` construye el `NetworkModel` leyendo las tablas de red desde la
-**base de origen** configurada (`migracion` en `config/base.yaml`): DuckDB/Parquet,
-SQL Server, PostgreSQL, Oracle, MySQL o CSV, vía la interfaz `SourceConnector`. El
-mapeo FGDB→canónico vive en `config/field_map.yaml` (§4.3) y los decodificadores de
-dominio (`canonical/decode.py`) resuelven la fase bitmask (A=4,B=2,C=1), el parseo
-de `POTENCIANOMINAL` (String→Double) y la cascada de longitud
-(LONGITUDCAMPO→LONGITUDSISTEMA→SHAPE_Length).
+**base de origen** configurada (`migracion` en `config/base.yaml`): FGDB, DuckDB/
+Parquet, SQL Server, PostgreSQL, Oracle/ArcSDE, MySQL o CSV, vía la interfaz
+`SourceConnector`. El mapeo FGDB→canónico vive en `config/field_map.yaml` (§4.3) y
+los decodificadores de dominio (`canonical/decode.py`) resuelven la fase bitmask
+(A=4,B=2,C=1), el parseo de `POTENCIANOMINAL` (String→Double) y la cascada de
+longitud (LONGITUDCAMPO→LONGITUDSISTEMA→SHAPE_Length).
 
 La operación inversa `network_to_tables` + `persist_network` permite el ciclo
 verificable *red → tablas → migración → red* (round-trip), probado en

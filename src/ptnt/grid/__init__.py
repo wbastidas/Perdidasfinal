@@ -8,6 +8,7 @@ from ptnt.grid.loadability import (
     phase_imbalance_pct,
     rebalance_benefit_kwh,
 )
+from ptnt.grid.lv_aggregation import LVZone, aggregate_to_transformers
 from ptnt.grid.risk import aggregate_risk
 
 __all__ = [
@@ -16,4 +17,6 @@ __all__ = [
     "phase_imbalance_pct",
     "rebalance_benefit_kwh",
     "aggregate_risk",
+    "aggregate_to_transformers",
+    "LVZone",
 ]

@@ -18,10 +18,15 @@ def build_connector(fuente: FuenteConfig) -> SourceConnector:
         from ptnt.io.sources.duckdb_source import DuckdbSource
 
         return DuckdbSource(fuente)
+    if tipo == TipoFuente.FGDB:
+        from ptnt.io.sources.fgdb_source import FgdbSource
+
+        return FgdbSource(fuente)
     if tipo in {
         TipoFuente.SQLSERVER,
         TipoFuente.POSTGRES,
         TipoFuente.ORACLE,
+        TipoFuente.ORACLE_ARCSDE,
         TipoFuente.MYSQL,
     }:
         from ptnt.io.sources.sql_source import SqlSource

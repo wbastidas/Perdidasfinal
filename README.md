@@ -4,9 +4,14 @@ Sistema en Python, pensado para un **servidor único**, que a partir de la
 información comercial de consumo (hasta 36 meses por cliente) y del modelo de
 datos de la red (esquema **Puesto → Unidad** homologado CNEL EP):
 
-1. **Ingiere consumo desde distintas bases de origen** (CSV comercial, SQL
-   Server, PostgreSQL, Oracle, MySQL o Parquet/DuckDB) mediante conectores
-   intercambiables.
+1. **Ingiere desde distintas bases de origen** (CSV comercial, SQL Server,
+   PostgreSQL, Oracle, MySQL, Parquet/DuckDB y la **File Geodatabase de ArcGIS**
+   —red geométrica, ST_Geometry, EPSG:32717— o **Oracle 11gR2 + ArcSDE**)
+   mediante conectores intercambiables. Modela transformadores (Puesto→Unidad),
+   clientes, luminarias, **semáforos/cámaras**, seccionadores, **bancos de
+   capacitores**, postes y la **cabecera** (PuestoProteccionDinamico con
+   CircuitSource), y agrega la baja tensión a cada transformador por
+   `PARENTCIRCUITSOURCEGUID`.
 2. **Promedia el consumo sobre varios meses** con métodos robustos (media,
    media recortada, mediana, ponderada por recencia, estacional). El promedio
    multi-mes reemplaza al “último mes” que usa el SIG, que es frágil.
@@ -93,7 +98,7 @@ pip install -e ".[all]"   # todo
 src/ptnt/
 ├── config/       # modelos pydantic + carga YAML (validación estricta)
 ├── io/
-│   ├── sources/  # conectores multi-origen (csv, sql, duckdb)
+│   ├── sources/  # conectores multi-origen (csv, sql, duckdb, FGDB ArcGIS, Oracle/ArcSDE)
 │   └── commercial_parser.py   # parseo §6.4 (separadores por columna)
 ├── load/
 │   ├── averaging.py           # promedio multi-mes (mecanismo clave)
@@ -101,15 +106,16 @@ src/ptnt/
 ├── quality/reconciliation.py  # informe SIG vs corregido (§6.1)
 ├── ntl/
 │   ├── signals.py             # señales S1–S10 de hurto
+│   ├── network_signals.py     # N1/N3/N4 (residuo zona, totalizador, cargabilidad)
 │   └── scoring.py             # consenso + ranking
 ├── canonical/    # decodificadores de dominio (fase bitmask, kVA) + field_map (§4)
-├── ref/          # catálogos: conductores, transformadores
+├── ref/          # catálogos: conductores, transformadores, CATALOGOESTRUCTURA (Excel)
 ├── topology/     # grafo radial + trazas + zonas (E4)
 ├── powerflow/    # flujo BFS 1φ + 3φ con neutro + OpenDSS (export/run) + validación (E8.1)
 ├── losses/       # pérdidas técnicas + Monte Carlo P10/P50/P90 (E8)
 ├── lighting/     # alumbrado público (E7)
 ├── balance/      # balance jerárquico y PNT + controles C01-C06 (E9)
-├── grid/         # cargabilidad, desbalance de fases, riesgo multinivel (E10)
+├── grid/         # cargabilidad, desbalance, riesgo multinivel, agregación LV al trafo (E10)
 ├── quality/      # reconciliación (§6.1) + motor de reglas R05/R09/R11/R12/R15/R22/R24/P01/P09 (E5)
 ├── store/        # DuckDB (schema.sql) + persistencia
 ├── io/migration.py  # migración origen → modelo canónico (§4.3, round-trip)

@@ -25,6 +25,7 @@ pytest --cov=ptnt --cov-report=term-missing   # con cobertura
 | `test_risk.py` | Agregación multinivel del riesgo, penalización por baja confiabilidad, inferencia de configuración de banco |
 | `test_advanced.py` | Monte Carlo (percentiles ordenados), **validación del flujo** (<2% error, incl. OpenDSS si está), motor de reglas (detecta R05/R11/R12/R22/R24/R15; red limpia sin hallazgos), exportador OpenDSS, señales de red N1/N3/N4, reporte ejecutivo HTML |
 | `test_3ph_migration.py` | Decodificadores (fase bitmask, kVA, cascada de longitud), **motor trifásico con neutro** (balanceado→neutro 0, desbalanceado→neutro y pérdida; 3φ≈1φ balanceado), **migración de datos** round-trip y desde DuckDB |
+| `test_catalog_lv.py` | **Catálogo CATALOGOESTRUCTURA** (clasificación por prefijo, kVA/banco, balastro AP, kVAR, doble nivel), **agregación LV al transformador** sin doble conteo en tronco, **totalizador** (no re-suma individuales), **semáforos/cámaras** como AP no medido, balastro desde catálogo |
 
 **Propiedades verificadas (hypothesis):**
 - `S ≥ P` para todo P ≥ 0 y cosφ ∈ [0.5, 1].
@@ -72,7 +73,7 @@ sintética y verifica:
 ## Estado actual
 
 ```
-124 passed
+141 passed
 ```
 
 Cobertura del núcleo de dominio (objetivo de la especificación ≥ 85 %):
