@@ -1,0 +1,192 @@
+# =============================================================================
+# PTNT-BAL — Configuración base
+# Ningún valor de este archivo debe estar escrito en el código fuente.
+# Los parámetros sin valor por defecto son OBLIGATORIOS: si faltan, el arranque
+# falla con error explícito (nombre del parámetro + ruta en el YAML).
+# =============================================================================
+
+proyecto:
+  nombre: "PTNT-BAL"
+  version_config: "1.0.0"
+  unidad_negocio: "GYE"                 # OBLIGATORIO
+  codigo_empresa: "CNELGYE"
+  zona_horaria: "America/Guayaquil"
+
+rutas:
+  duckdb: "data/ptnt.duckdb"
+  salidas: "outputs"
+  bronze: "data/bronze"
+  silver: "data/silver"
+  gold: "data/gold"
+
+# -----------------------------------------------------------------------------
+# Bases de origen (multi-origen). Las credenciales NO van aquí: se referencian
+# por variable de entorno (usuario_env / password_env). Ver docs/SEGURIDAD.md.
+# -----------------------------------------------------------------------------
+fuentes:
+  - nombre: "comercial_csv"
+    tipo: "csv"
+    ruta: "data/entrada/consumos_36m.csv"
+
+  - nombre: "comercial_sqlserver"
+    tipo: "sqlserver"
+    host: "srv-comercial.cnel.local"
+    puerto: 1433
+    base_datos: "CIS"
+    esquema: "dbo"
+    driver: "ODBC Driver 18 for SQL Server"
+    usuario_env: "PTNT_SRC_COMERCIAL_USER"
+    password_env: "PTNT_SRC_COMERCIAL_PASS"
+    requiere_ssl: true
+
+  - nombre: "sig_postgres"
+    tipo: "postgres"
+    host: "srv-sig.cnel.local"
+    puerto: 5432
+    base_datos: "sig_gye"
+    esquema: "public"
+    usuario_env: "PTNT_SRC_SIG_USER"
+    password_env: "PTNT_SRC_SIG_PASS"
+    requiere_ssl: true
+
+  - nombre: "resultados_local"
+    tipo: "duckdb"
+    ruta: "data/ptnt.duckdb"
+
+# -----------------------------------------------------------------------------
+# Ingesta comercial (§6.4). El punto significa cosas distintas por columna.
+# -----------------------------------------------------------------------------
+comercial:
+  separador: ";"
+  encoding: "latin-1"
+  parseo_columnas:
+    kwh:
+      separador_miles: "."
+      separador_decimal: ","
+    coordenadas:
+      separador_decimal: "."
+  orden_meses: "antiguo_primero"        # antiguo_primero | reciente_primero
+  verificar_orientacion: true
+  mes_final: "2026-05-01"               # OBLIGATORIO — mes de KWH_36
+  columnas:
+    division: "DIVISION"
+    cuenta_contrato: "CUENTACONTRATO"
+    nombre: "NOMBRE"
+    tarifa: "DESTARI"
+    x: "ZZUTM_X"
+    y: "ZZUTM_Y"
+    prefijo_kwh: "KWH_"
+    grupo_lectura: "CLIRLSCOD"          # grupo de ruta de lectura (grupo par)
+    ultimo_consumo_mes: "CLIULTCONM"
+  rangos_plausibles_kwh_mes:
+    "BT Residencial": {min: 0, max: 5000}
+    "BT Comercial":   {min: 0, max: 30000}
+    "BT Industrial":  {min: 0, max: 200000}
+    "MT Industrial":  {min: 0, max: 5000000}
+
+# -----------------------------------------------------------------------------
+# Mecanismo de promedio multi-mes. El consumo es de varios meses; para el
+# cálculo de demanda NO se usa el último mes aislado (error del SIG), sino un
+# promedio robusto de la ventana configurada.
+# -----------------------------------------------------------------------------
+promedio:
+  metodo: "media_recortada"    # media | media_recortada | mediana | media_ponderada | estacional
+  ventana_meses: 12
+  recorte_pct: 10.0
+  half_life_meses: 6.0
+  excluir_ceros_suspendidos: true
+  excluir_estimadas: false
+  min_meses_validos: 3
+
+# -----------------------------------------------------------------------------
+# Modelado de carga (§6)
+# -----------------------------------------------------------------------------
+carga:
+  metodo_demanda_maxima: "VELANDER"
+  dias_periodo_por_defecto: 30
+  prorrateo_calendario: true
+  coincidencia_minima: 0.15
+  calibrar_contra_cabecera: true
+  voltaje_ln: 127.0
+  voltaje_ll: 220.0
+  clases:
+    "BT Residencial":
+      a: 0.0002
+      b: 0.0300
+      A: 0.20
+      B: 0.80
+      cos_phi: 0.92
+      factor_carga: 0.42
+      k_perdidas: 0.30
+      es_residencial: true
+    "BT Comercial":
+      a: 0.00025
+      b: 0.0350
+      A: 0.30
+      B: 0.70
+      cos_phi: 0.90
+      factor_carga: 0.50
+      k_perdidas: 0.25
+      es_residencial: false
+    "BT Industrial":
+      a: 0.00030
+      b: 0.0400
+      A: 0.50
+      B: 0.50
+      cos_phi: 0.88
+      factor_carga: 0.65
+      k_perdidas: 0.18
+      es_residencial: false
+    "MT Industrial":
+      a: 0.00035
+      b: 0.0450
+      A: 0.70
+      B: 0.30
+      cos_phi: 0.92
+      factor_carga: 0.75
+      k_perdidas: 0.15
+      es_residencial: false
+
+# -----------------------------------------------------------------------------
+# Señales de PNT / hurto (§11.3)
+# -----------------------------------------------------------------------------
+senales:
+  s1_caida_min_pct: 40.0
+  s1_meses_min_caida: 3
+  s1_tolerancia_recuperacion_pct: 15.0
+  s3_cambio_min_pct: 30.0
+  s4_meses_min_cero: 3
+  s5_percentil: 5.0
+  s5_min_pares: 5
+  s7_cv_max: 0.05
+  s8_min_unidades: 3
+  s8_cv_min: 0.60
+  contaminacion: 0.05
+  usar_no_supervisado: true
+  campo_grupo_par: "grupo_lectura"      # CLIRLSCOD
+
+# -----------------------------------------------------------------------------
+# Seguridad
+# -----------------------------------------------------------------------------
+seguridad:
+  autenticacion_habilitada: true
+  jwt_secret_env: "PTNT_JWT_SECRET"
+  jwt_ttl_min: 60
+  ruta_usuarios: "config/usuarios.json"
+  redes_permitidas: []                  # p.ej. ["10.0.0.0/8", "192.168.0.0/16"]
+  max_intentos_login: 5
+
+# -----------------------------------------------------------------------------
+# Interfaces web
+# -----------------------------------------------------------------------------
+dashboard:
+  puerto: 8501
+  host: "127.0.0.1"
+  cache_ttl_s: 600
+  idioma: "es"
+  formato_numero: "es_EC"
+
+visor:
+  puerto: 8080
+  host: "127.0.0.1"
+  titulo: "PTNT-BAL — Resultados"

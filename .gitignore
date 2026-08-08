@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Datos y salidas (no versionar volúmenes ni resultados)
+data/
+outputs/
+*.duckdb
+*.duckdb.wal
+*.parquet
+
+# Configuración sensible / usuarios
+config/usuarios.json
+
+# Pruebas / cobertura
+.pytest_cache/
+.coverage
+htmlcov/
+.hypothesis/
+
+# Editores / SO
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
