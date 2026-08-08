@@ -199,6 +199,26 @@ def _norm(vals: np.ndarray) -> np.ndarray:
     return (v - lo) / (hi - lo)
 
 
+def _id_unico(entidad: object, feeder: object, prefijo_defecto: str) -> str:
+    """Identificador único en todo el sistema para un objetivo de campo.
+
+    Los identificadores de nodo (``BT3_0_0``, ``TS9``) solo son únicos **dentro**
+    de un alimentador: dos alimentadores distintos tienen su propio ``TS9``. Si el
+    plan los usara tal cual, dos objetivos con energías completamente distintas
+    aparecerían con el mismo nombre y una orden de trabajo emitida para ``TS9``
+    sería ambigua — la cuadrilla no sabría a cuál de los dos ir.
+
+    Por eso el identificador se cualifica con el alimentador, salvo que ya lo
+    contenga (el nivel ALIMENTADOR y las rutas comerciales ya vienen calificados).
+    """
+
+    ent = str(entidad or prefijo_defecto)
+    f = str(feeder or "").strip()
+    if not f or ent.startswith(f):
+        return ent
+    return f"{f}/{ent}"
+
+
 def _priority(
     suspicion: np.ndarray,
     energy: np.ndarray,
@@ -239,6 +259,7 @@ def build_survey_plan(
     umbral_confiabilidad: float = 50.0,
     top_clientes: int = 200,
     min_cluster_size: int = 5,
+    feeders_con_transferencia: set[str] | None = None,
 ) -> SurveyPlan:
     """Construye el plan de levantamientos a partir de los resultados del análisis.
 
@@ -301,7 +322,7 @@ def build_survey_plan(
         for i, r in df.iterrows():
             targets.append(SurveyTarget(
                 level=TargetLevel.ZONA_PROTECCION,
-                entity_id=str(r.get("zone_id", f"Z{i}")),
+                entity_id=_id_unico(r.get("zone_id"), r.get("feeder_code"), f"Z{i}"),
                 feeder_code=str(r.get("feeder_code", "")) or None,
                 priority_score=float(prio[i]), suspicion=float(susp[i]),
                 recoverable_kwh_month=float(r.get("residual_kwh", 0) or 0),
@@ -348,7 +369,7 @@ def build_survey_plan(
                 ]
             targets.append(SurveyTarget(
                 level=TargetLevel.RAMAL,
-                entity_id=str(r.get("branch_id", f"R{i}")),
+                entity_id=_id_unico(r.get("branch_id"), r.get("feeder_code"), f"R{i}"),
                 feeder_code=str(r.get("feeder_code", "")) or None,
                 priority_score=float(prio[i]), suspicion=float(susp[i]),
                 recoverable_kwh_month=float(recup[i]),
@@ -397,7 +418,7 @@ def build_survey_plan(
                 razones.append("Priorizado por energía en juego del puesto")
             targets.append(SurveyTarget(
                 level=TargetLevel.PUESTO_TRANSFORMACION,
-                entity_id=str(r.get("site_id", f"TS{i}")),
+                entity_id=_id_unico(r.get("site_id"), r.get("feeder_code"), f"TS{i}"),
                 feeder_code=str(r.get("feeder_code", "")) or None,
                 priority_score=float(prio[i]), suspicion=float(susp[i]),
                 recoverable_kwh_month=float(energia[i]),
@@ -502,10 +523,31 @@ def build_survey_plan(
                         centroid_x=s.centroid_x, centroid_y=s.centroid_y,
                     ))
 
+    # --- Coherencia con el diagnóstico de transferencias ---------------------
+    # Si el diagnóstico detectó una maniobra de carga no reportada entre dos
+    # alimentadores, su PNT está contaminada: parte de la energía "faltante" se
+    # fue al vecino, no la robó nadie. Mandar cuadrillas ahí es gastar el
+    # presupuesto persiguiendo un artefacto de red. Se marcan como problema de
+    # datos —lo que degrada su prioridad y los saca de las órdenes de trabajo—
+    # en vez de eliminarlos, para que el analista vea por qué no están.
+    afectados = {str(f) for f in (feeders_con_transferencia or set())}
+    n_degradados = 0
+    if afectados:
+        for t in targets:
+            if t.feeder_code and str(t.feeder_code) in afectados:
+                t.data_problem_flag = True
+                t.reasons = ([
+                    "Transferencia de carga no reportada en este alimentador: la "
+                    "PNT no es atribuible a hurto hasta aclarar la maniobra"
+                ] + t.reasons)[:3]
+                n_degradados += 1
+
     targets.sort(key=lambda t: t.priority_score, reverse=True)
 
     resumen = {
         "n_objetivos": len(targets),
+        "objetivos_por_transferencia": n_degradados,
+        "alimentadores_con_transferencia": sorted(afectados),
         "por_nivel": {
             lvl.value: sum(1 for t in targets if t.level == lvl) for lvl in TargetLevel
         },

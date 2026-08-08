@@ -29,6 +29,7 @@ pytest --cov=ptnt --cov-report=term-missing   # con cobertura
 | `test_anomalies_confirmed.py` | **Transferencias** (detecta la inyectada, 1 mes = NO_APLICABLE, pico no es transferencia), **clientes faltantes** (ambos sentidos, umbral de energía, concentración por ruta), **incoherencias** (PNT negativa bloquea publicación, transferencia excluye del ranking), **base de multados** (lift real, control negativo con ranking aleatorio, fecha de corte contra fuga, calibración detecta señal inútil, PU learning), **ruta comercial** (sospecha, incoherencia por ceros/estimadas, nivel del plan) |
 | `test_catalog_lv.py` | **Catálogo CATALOGOESTRUCTURA** (clasificación por prefijo, kVA/banco, balastro AP, kVAR, doble nivel), **agregación LV al transformador** sin doble conteo en tronco, **totalizador** (no re-suma individuales), **semáforos/cámaras** como AP no medido, balastro desde catálogo |
 | `test_segmentacion.py` | **Clasificación de tarifas reales** (texto libre de DESTARI, no se adivina residencial), **resolución semántica de la clave del catálogo** (evita que los industriales caigan a la clase por defecto), **grupo par jerárquico** (nivel más fino disponible, degradación, sin grupo se reporta, confianza pondera S5), **el estrato NO entra en el grupo par** (regresión crítica: sería circular), **S9** (déficit contra la base propia), **recuperable segmentado** (el global subestima al industrial e inventa al pequeño; máximo de dos estimadores; mediana robusta), **rendimiento por visita** (ordena por valor, no por score) y **grandes clientes** (solo con indicios reales) |
+| `test_escenario_costa_reportes.py` | **Escenario costero** (estacionalidad de Costa y no de Sierra, coordenadas UTM 17S, mezcla realista de clases, rutas con vocación, hurto concentrado en periferia, Tarifa Dignidad solo bajo el techo, las redes llevan clientes reales del padrón, alimentadores distintos entre sí, **cabecera cubre el facturado**), **motor de informes** (enteros sin decimales, tabla vacía y filas omitidas, SVG válido y sin datos, **el mapa conserva la escala real del terreno**, HTML autocontenido, **escapa el contenido de la base de origen**, compendio con saltos de página) |
 | `test_locations_versioning.py` | **Identidad geográfica estable** (código determinista, agrupa coordenadas cercanas, sectores conservan ubicación al cargar datos nuevos y ante reordenamiento), **registro persistente** (acumula priorizaciones sin inflar por re-ejecución, reincidencia, cierre por inspección, persistencia en disco), **versionado de topología** (alta, sin cambio, cada hash reacciona solo a su dominio, invalidación selectiva por tipo de cambio, historial, **las ubicaciones sobreviven al cambio de red**) |
 
 **Propiedades verificadas (hypothesis):**
@@ -86,6 +87,27 @@ sintética y verifica:
   **200** con credencial válida y **403** desde una red no autorizada.
 - El conector SQL usa `URL.create` parametrizado (no concatena la contraseña).
 
+## Prueba a escala — 20 000 clientes, Costa ecuatoriana
+
+`scripts/prueba_costa_20k.py` ejecuta el proceso completo sobre un segundo grupo
+de prueba independiente y emite **un informe HTML + PDF por etapa** (≈ 55 s).
+Detalle completo en [`PRUEBA_COSTA_20K.md`](PRUEBA_COSTA_20K.md).
+
+| Verificación | Esperado | Obtenido |
+|---|---|---|
+| Recall top 10 % | > 60 % | **99,8 %** |
+| Lift top 5 % | > 3× | **16,7×** |
+| Transferencia de carga inyectada | GYE-04 → GYE-05 | **detectada** |
+| Clientes faltantes | 500 | **500** |
+| Balance cierra en todos los alimentadores | 12 | **12** |
+| Identificadores de objetivo únicos | 1 453 | **1 453** |
+
+Esta prueba destapó cuatro defectos que la demo de 1 200 clientes no revelaba:
+la detección de transferencias confundida por la estacionalidad común, la
+colisión de identificadores entre alimentadores, la contradicción entre el
+diagnóstico y el plan, y un doble conteo de estacionalidad en el escenario.
+Los cuatro están corregidos y con prueba de regresión.
+
 ## Demostración extremo a extremo con datos ficticios
 
 Además de las suites automáticas, `scripts/demo_completa.py` ejecuta el proceso
@@ -115,7 +137,7 @@ tests los fijan como garantía de regresión.
 ## Estado actual
 
 ```
-245 passed
+267 passed
 ```
 
 Cobertura del núcleo de dominio (objetivo de la especificación ≥ 85 %):

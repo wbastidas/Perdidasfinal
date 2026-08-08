@@ -203,7 +203,7 @@ def test_ramal_sin_señales_no_es_prioritario():
     ])
     ramales = plan.by_level(TargetLevel.RAMAL)
     top = max(ramales, key=lambda t: t.priority_score)
-    assert top.entity_id == "R_con"
+    assert top.entity_id.endswith("R_con")
 
 
 @pytest.mark.unit
@@ -286,3 +286,77 @@ def test_vinculacion_cuentas_comerciales_a_red():
     assert len(mapa) == 6
     ids = [c["customer_id"] for cls in model.customer_nodes.values() for c in cls]
     assert set(ids) == set(cuentas)
+
+
+@pytest.mark.unit
+def test_identificadores_de_objetivo_son_unicos_entre_alimentadores():
+    """Dos alimentadores tienen su propio `TS9` y su propio `BT3_0_0`.
+
+    Sin cualificar el identificador con el alimentador, el plan mostraría dos
+    objetivos con el MISMO nombre y energías completamente distintas, y una orden
+    de trabajo emitida para `TS9` sería ambigua: la cuadrilla no sabría a cuál ir.
+    """
+
+    plan = build_survey_plan(
+        branch_stats=[
+            {"branch_id": "BT3_0_0", "feeder_code": "GYE-01", "customers": 20,
+             "suspect_customers": 5, "energy_kwh": 9000, "recoverable_kwh": 300,
+             "network_km": 1.0},
+            {"branch_id": "BT3_0_0", "feeder_code": "GYE-08", "customers": 40,
+             "suspect_customers": 18, "energy_kwh": 90000, "recoverable_kwh": 9000,
+             "network_km": 2.0},
+        ],
+        transformer_stats=[
+            {"site_id": "TS9", "feeder_code": "GYE-01", "customers": 30,
+             "suspect_customers": 2, "energy_kwh": 8000, "recoverable_kwh": 200},
+            {"site_id": "TS9", "feeder_code": "GYE-08", "customers": 30,
+             "suspect_customers": 14, "energy_kwh": 80000, "recoverable_kwh": 7000},
+        ],
+    )
+    ids = [t.entity_id for t in plan.targets]
+    assert len(ids) == len(set(ids)), f"identificadores duplicados: {ids}"
+    assert "GYE-01/BT3_0_0" in ids and "GYE-08/BT3_0_0" in ids
+    assert "GYE-01/TS9" in ids and "GYE-08/TS9" in ids
+
+
+@pytest.mark.unit
+def test_identificador_no_se_duplica_si_ya_trae_el_alimentador():
+    """Las rutas comerciales ya vienen calificadas (`GYE-08-R09`): no se re-prefijan."""
+
+    plan = build_survey_plan(route_stats=[
+        {"route_id": "GYE-08-R09", "feeder_code": "GYE-08", "customers": 100,
+         "suspect_customers": 12, "energy_kwh": 50000, "recoverable_kwh": 4000},
+    ])
+    ids = [t.entity_id for t in plan.targets]
+    assert ids == ["GYE-08-R09"]
+
+
+@pytest.mark.unit
+def test_transferencia_saca_al_alimentador_de_las_ordenes_de_trabajo():
+    """Coherencia entre el diagnóstico y el plan de campo.
+
+    Si el diagnóstico detectó una maniobra de carga no reportada, parte de la
+    energía "faltante" se fue al alimentador vecino: nadie la robó. Emitir órdenes
+    ahí es gastar cuadrillas persiguiendo un artefacto de red. El plan debe
+    reflejar lo que el diagnóstico ya dijo, no contradecirlo.
+    """
+
+    comunes = dict(customers=50, suspect_customers=20, energy_kwh=90000,
+                   recoverable_kwh=9000, network_km=2.0)
+    plan = build_survey_plan(
+        transformer_stats=[
+            {"site_id": "TS1", "feeder_code": "GYE-04", **comunes},
+            {"site_id": "TS1", "feeder_code": "GYE-99", **comunes},
+        ],
+        feeders_con_transferencia={"GYE-04"},
+    )
+    por_id = {t.entity_id: t for t in plan.targets}
+    assert por_id["GYE-04/TS1"].data_problem_flag is True
+    assert por_id["GYE-99/TS1"].data_problem_flag is False
+    assert "Transferencia" in por_id["GYE-04/TS1"].reasons[0]
+    assert plan.resumen["alimentadores_con_transferencia"] == ["GYE-04"]
+
+    # y no llega a las órdenes de trabajo
+    ot = plan.work_orders(top_n=10)
+    assert "GYE-04/TS1" not in set(ot["entidad"])
+    assert "GYE-99/TS1" in set(ot["entidad"])

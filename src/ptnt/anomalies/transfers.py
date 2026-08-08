@@ -95,6 +95,7 @@ def detect_transfers(
     simetria_min: float = 0.60,
     exigir_sostenido: bool = True,
     vecinos: dict[str, set[str]] | None = None,
+    descontar_movimiento_comun: bool = True,
 ) -> TransferReport:
     """Detecta transferencias probables entre alimentadores.
 
@@ -133,7 +134,24 @@ def detect_transfers(
             ),
         )
 
-    deltas = piv.diff()               # variación mes a mes
+    # --- Descuento del movimiento común del sistema --------------------------
+    # En una misma zona todos los alimentadores suben y bajan JUNTOS por
+    # estacionalidad (en la Costa, climatización de enero a abril). Buscando
+    # pares sobre la variación bruta, cualquier alimentador que baje aparece
+    # emparejado con todos los que suben, y el par real se pierde entre falsos
+    # positivos: medido sobre el escenario de 12 alimentadores, la variación
+    # bruta producía 3 pares espurios y NO encontraba la transferencia inyectada.
+    #
+    # Se descuenta el movimiento común usando la **mediana** de las variaciones
+    # relativas del período (robusta: si un par transfiere, son 2 de N series y
+    # no mueven la mediana). Lo que queda es la variación idiosincrática de cada
+    # alimentador, que es donde vive la maniobra.
+    if descontar_movimiento_comun and piv.shape[1] >= 3:
+        rel = piv.pct_change()
+        comun = rel.median(axis=1)
+        deltas = rel.sub(comun, axis=0) * piv.shift(1)
+    else:
+        deltas = piv.diff()           # variación bruta mes a mes
     alimentadores = list(piv.columns)
     candidatos: list[TransferCandidate] = []
 

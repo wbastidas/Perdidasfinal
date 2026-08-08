@@ -48,6 +48,7 @@ datos de la red (esquema **Puesto → Unidad** homologado CNEL EP):
 > [Instalación en Windows](docs/INSTALACION_WINDOWS.md) ·
 > **[Guía de operación paso a paso](docs/GUIA_OPERACION.md)** ·
 > [Segmentación de clientes](docs/SEGMENTACION.md) ·
+> **[Prueba a escala — 20 000 clientes](docs/PRUEBA_COSTA_20K.md)** ·
 > [Focalización de levantamientos](docs/FOCALIZACION.md) ·
 > [Diagnóstico y validación](docs/DIAGNOSTICO.md) ·
 > [Proceso](docs/PROCESO.md) · [Seguridad](docs/SEGURIDAD.md) ·
@@ -69,6 +70,19 @@ de multados, focalización, **carga de un mes nuevo** y **modificación de
 topología**— y contrasta cada resultado contra lo inyectado. El paso a paso y la
 interpretación de cada salida están en
 [`docs/GUIA_OPERACION.md`](docs/GUIA_OPERACION.md).
+
+## Prueba a escala con informes PDF
+
+```bash
+python scripts/prueba_costa_20k.py      # 20 000 clientes, ~55 s
+```
+
+Segundo grupo de prueba independiente: 20 000 clientes de una distribuidora de la
+**Costa ecuatoriana** (12 alimentadores, estacionalidad costera, Tarifa Dignidad,
+coordenadas UTM 17S de Guayaquil/Durán). Emite **un informe HTML + PDF por etapa**
+más un compendio, hasta responder *dónde hay que ir a hacer el levantamiento —
+por alimentador, ramal, transformador o sector*. Detalle en
+[`docs/PRUEBA_COSTA_20K.md`](docs/PRUEBA_COSTA_20K.md).
 
 ---
 
@@ -143,6 +157,7 @@ src/ptnt/
 │   └── demand.py              # P, Q, S, I §6 (corrige el √3 y el último-mes)
 ├── quality/reconciliation.py  # informe SIG vs corregido (§6.1)
 ├── segment/      # clasificación por tarifa/tensión/estrato + grupo par jerárquico
+├── report/       # informes HTML autocontenidos + gráficos SVG + PDF (Chromium)
 ├── ntl/
 │   ├── signals.py             # señales S1–S9 de hurto
 │   ├── network_signals.py     # N1/N3/N4 (residuo zona, totalizador, cargabilidad)
@@ -180,7 +195,7 @@ pytest -m security      # auth, secretos, visor
 pytest --cov=ptnt       # cobertura
 ```
 
-**245 pruebas** en verde. Detalle de qué cubre cada archivo y los resultados de la
+**267 pruebas** en verde. Detalle de qué cubre cada archivo y los resultados de la
 demostración extremo a extremo en [`docs/PRUEBAS.md`](docs/PRUEBAS.md).
 
 ## Alcance de esta entrega
