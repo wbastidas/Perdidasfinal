@@ -304,6 +304,42 @@ class SegmentacionConfig(_Strict):
 
 
 # ---------------------------------------------------------------------------
+# Jerarquía organizacional y carga parcial
+# ---------------------------------------------------------------------------
+class OrganizacionConfig(_Strict):
+    """Catálogo alimentador → subestación → unidad de negocio.
+
+    Sin este catálogo el sistema solo puede razonar desde el alimentador hacia
+    abajo, que es suficiente para el análisis técnico pero no para la gestión:
+    el presupuesto se decide por unidad de negocio y la operación por subestación.
+    """
+
+    catalogo: str | None = None            # CSV: feeder_code, subestacion, unidad_negocio
+    inferir_si_falta: bool = True          # deducir la UN del prefijo del código
+    separador_codigo: str = "-"            # "GYE-01" -> UN "GYE"
+
+
+class CargaParcialConfig(_Strict):
+    """Carga parcial: alcance declarado y umbrales de cobertura."""
+
+    ruta_alcance: str = "outputs/alcance_carga.json"
+    # Universo esperado de alimentadores. Vacío = el universo es lo cargado, y
+    # entonces la cobertura no puede detectar faltantes.
+    universo_alimentadores: list[str] = Field(default_factory=list)
+    # Por debajo de esta cobertura el consolidado se marca PARCIAL.
+    cobertura_minima_pct: float = Field(99.9, ge=0.0, le=100.0)
+
+
+class HistoricoConfig(_Strict):
+    """Serie de instantáneas del balance para el tablero de evolución."""
+
+    habilitado: bool = True
+    ruta: str = "outputs/historico_balance.parquet"
+    # Períodos mínimos para dibujar una tendencia; con menos se muestran puntos.
+    min_periodos_tendencia: int = Field(3, ge=2)
+
+
+# ---------------------------------------------------------------------------
 # Seguridad
 # ---------------------------------------------------------------------------
 class SecurityConfig(_Strict):
@@ -484,6 +520,9 @@ class AppConfig(_Strict):
     carga: LoadConfig
     senales: SignalsConfig = Field(default_factory=SignalsConfig)
     segmentacion: SegmentacionConfig = Field(default_factory=SegmentacionConfig)
+    organizacion: OrganizacionConfig = Field(default_factory=OrganizacionConfig)
+    carga_parcial: CargaParcialConfig = Field(default_factory=CargaParcialConfig)
+    historico: HistoricoConfig = Field(default_factory=HistoricoConfig)
     catalogos: CatalogosConfig = Field(default_factory=CatalogosConfig)
     perdidas: PerdidasConfig = Field(default_factory=PerdidasConfig)
     alumbrado: AlumbradoConfig = Field(default_factory=AlumbradoConfig)

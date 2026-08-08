@@ -13,8 +13,13 @@ nivel, con:
   presupuesto en nada.
 
 Niveles (de mayor a menor agregación):
-``ALIMENTADOR`` → ``ZONA_PROTECCION`` → ``RAMAL`` → ``PUESTO_TRANSFORMACION``
-→ ``SECTOR`` (geográfico) → ``CLIENTE``.
+``UNIDAD_NEGOCIO`` → ``SUBESTACION`` → ``ALIMENTADOR`` → ``ZONA_PROTECCION``
+→ ``RAMAL`` → ``PUESTO_TRANSFORMACION`` → ``SECTOR`` (geográfico) → ``CLIENTE``.
+
+Los dos primeros son niveles de **decisión**, no de intervención: nadie emite una
+orden de trabajo para una unidad de negocio entera. Sirven para asignar
+presupuesto y priorizar el esfuerzo del período, y por eso quedan fuera de las
+órdenes de trabajo aunque aparezcan en el plan.
 
 El plan resultante es ordenable, exportable (XLSX/CSV), reportable (HTML) y visible
 en el tablero y el visor web.
@@ -30,6 +35,8 @@ import pandas as pd
 
 
 class TargetLevel(str, Enum):
+    UNIDAD_NEGOCIO = "UNIDAD_NEGOCIO"    # nivel de decisión presupuestaria
+    SUBESTACION = "SUBESTACION"          # nivel de decisión operativa
     ALIMENTADOR = "ALIMENTADOR"
     ZONA_PROTECCION = "ZONA_PROTECCION"
     RAMAL = "RAMAL"
@@ -83,6 +90,10 @@ class SurveyTarget:
             return "Recorrido del ramal con medición de frontera"
         if self.level == TargetLevel.ZONA_PROTECCION:
             return "Instalar medición de frontera y seccionalizar la zona"
+        if self.level == TargetLevel.SUBESTACION:
+            return "Verificar medición de cabecera de los alimentadores de la S/E"
+        if self.level == TargetLevel.UNIDAD_NEGOCIO:
+            return "Asignar presupuesto y cuadrillas del período"
         return "Campaña de alimentador y verificación de cabecera"
 
 
@@ -260,6 +271,7 @@ def build_survey_plan(
     top_clientes: int = 200,
     min_cluster_size: int = 5,
     feeders_con_transferencia: set[str] | None = None,
+    jerarquia=None,
 ) -> SurveyPlan:
     """Construye el plan de levantamientos a partir de los resultados del análisis.
 
@@ -522,6 +534,71 @@ def build_survey_plan(
                                   "customers_list": s.customers},
                         centroid_x=s.centroid_x, centroid_y=s.centroid_y,
                     ))
+
+    # --- Niveles organizacionales: subestación y unidad de negocio -----------
+    # Se derivan agregando los balances de alimentador, no midiendo aparte: la
+    # energía se suma hacia arriba, pero el TIPO de balance no. Basta un
+    # alimentador INDICATIVO para que el consolidado no pueda presentarse como
+    # medido — ver `ptnt.org.hierarchy`.
+    if jerarquia is not None and feeder_balances:
+        from ptnt.org.hierarchy import NivelOrganizacional, agregar_balance
+
+        df_ali = pd.DataFrame([{
+            "alimentador": str(r.get("feeder_code", "")),
+            "entrada_kwh": float(r.get("input_kwh", 0) or 0),
+            "pnt_kwh": float(r.get("ntl_kwh", 0) or 0),
+            "clientes": int(r.get("customers", 0) or 0),
+            "tipo_balance": str(r.get("balance_type", "INDICATIVO")),
+        } for r in feeder_balances])
+        agregados = agregar_balance(df_ali, jerarquia)
+
+        for nivel, clave in (
+            (TargetLevel.SUBESTACION, NivelOrganizacional.SUBESTACION.value),
+            (TargetLevel.UNIDAD_NEGOCIO, NivelOrganizacional.UNIDAD_NEGOCIO.value),
+        ):
+            df = agregados.get(clave)
+            if df is None or df.empty:
+                continue
+            col = ("subestacion" if nivel is TargetLevel.SUBESTACION
+                   else "unidad_negocio")
+            for _, r in df.iterrows():
+                indicativos = int(r.get("alimentadores_indicativos", 0) or 0)
+                razones = [
+                    f"{int(r.get('alimentadores', 0))} alimentador(es), "
+                    f"{r.get('pnt_pct', 0):.1f}% de PNT sobre "
+                    f"{r.get('entrada_kwh', 0):,.0f} kWh de entrada",
+                ]
+                if indicativos:
+                    razones.append(
+                        f"{indicativos} alimentador(es) sin medición confiable: el "
+                        "consolidado NO es verificable hasta instalar cabecera")
+                targets.append(SurveyTarget(
+                    level=nivel,
+                    entity_id=str(r[col]),
+                    feeder_code=None,
+                    # se normaliza dentro del nivel más abajo, una vez que están
+                    # todos los objetivos del nivel
+                    priority_score=0.0,
+                    suspicion=float(r.get("pnt_pct", 0) or 0) / 100.0,
+                    recoverable_kwh_month=float(r.get("pnt_kwh", 0) or 0),
+                    customers_count=int(r.get("clientes", 0) or 0),
+                    confidence_index=100.0 if not indicativos else 50.0,
+                    reasons=razones[:3],
+                    evidence={
+                        "tipo_balance": r.get("tipo_balance"),
+                        "alimentadores": int(r.get("alimentadores", 0)),
+                        "alimentadores_indicativos": indicativos,
+                        "unidad_negocio": r.get("unidad_negocio"),
+                    },
+                ))
+        # prioridad normalizada DENTRO de cada nivel organizacional
+        for nivel in (TargetLevel.SUBESTACION, TargetLevel.UNIDAD_NEGOCIO):
+            grupo = [t for t in targets if t.level == nivel]
+            if grupo:
+                energias = _norm(np.array([t.recoverable_kwh_month for t in grupo]))
+                for t, e in zip(grupo, energias):
+                    t.priority_score = float(
+                        PESO_ENERGIA * e + PESO_SOSPECHA * min(t.suspicion * 5, 1.0))
 
     # --- Coherencia con el diagnóstico de transferencias ---------------------
     # Si el diagnóstico detectó una maniobra de carga no reportada entre dos

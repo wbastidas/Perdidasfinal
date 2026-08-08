@@ -40,11 +40,22 @@ datos de la red (esquema **Puesto → Unidad** homologado CNEL EP):
    objetivos se identifican por su **coordenada**, no por el orden del cálculo, de
    modo que una orden emitida hoy sigue apuntando al mismo sitio físico después de
    cargar el mes siguiente o de modificar la topología.
-9. **Publica los resultados en dos interfaces web**: un tablero de análisis para
-   escritorio (Streamlit) y un visor de solo lectura (FastAPI) para consulta por
-   terceros.
+9. **Consolida por unidad de negocio y subestación**, con la regla de que la
+   energía se suma hacia arriba pero la **credibilidad no**: basta un alimentador
+   sin medición confiable para que el consolidado no pueda presentarse como
+   MEDIDO.
+10. **Acepta carga parcial** de información con alcance declarado por insumo y
+    alimentador, y marca **PARCIAL** todo consolidado incompleto en vez de
+    dejar que se lea como el total.
+11. **Guarda el histórico** del balance por período y entidad, para ver si un
+    plan de reducción de pérdidas está funcionando.
+12. **Publica los resultados en dos interfaces web**: un tablero de análisis para
+    escritorio (Streamlit, 8 pestañas) y un visor de solo lectura (FastAPI).
 
-> Documentación completa en [`docs/`](docs/): [Arquitectura](docs/ARQUITECTURA.md) ·
+> **[Especificación completa](docs/ESPECIFICACION_COMPLETA.md)** — requerimientos,
+> campos y arquitectura de información para replicar el sistema.
+>
+> Documentación en [`docs/`](docs/): [Arquitectura](docs/ARQUITECTURA.md) ·
 > [Instalación en Windows](docs/INSTALACION_WINDOWS.md) ·
 > **[Guía de operación paso a paso](docs/GUIA_OPERACION.md)** ·
 > [Segmentación de clientes](docs/SEGMENTACION.md) ·
@@ -123,6 +134,8 @@ ptnt servir-visor       # visor de solo lectura  -> http://127.0.0.1:8080
 | `ptnt validar-flujo` | Valida el flujo contra casos analíticos y contra **OpenDSS** (si está instalado) |
 | `ptnt dashboard` | Tablero de análisis (Streamlit) |
 | `ptnt servir-visor` | Visor web de solo lectura (FastAPI) |
+| `ptnt registrar-carga` | **Carga parcial**: declara qué insumo se cargó de qué alimentadores; reporta cobertura y pendientes |
+| `ptnt consolidar` | **Consolidado por unidad de negocio y subestación** + instantánea al histórico |
 | `ptnt crear-usuario` | Alta de usuario para las interfaces (solo hash) |
 
 ## Instalación por capas (extras)
@@ -157,6 +170,8 @@ src/ptnt/
 │   └── demand.py              # P, Q, S, I §6 (corrige el √3 y el último-mes)
 ├── quality/reconciliation.py  # informe SIG vs corregido (§6.1)
 ├── segment/      # clasificación por tarifa/tensión/estrato + grupo par jerárquico
+├── org/          # Unidad de Negocio -> Subestación -> Alimentador
+├── ingest/       # carga parcial: alcance declarado y cobertura
 ├── report/       # informes HTML autocontenidos + gráficos SVG + PDF (Chromium)
 ├── ntl/
 │   ├── signals.py             # señales S1–S9 de hurto
@@ -195,7 +210,7 @@ pytest -m security      # auth, secretos, visor
 pytest --cov=ptnt       # cobertura
 ```
 
-**267 pruebas** en verde. Detalle de qué cubre cada archivo y los resultados de la
+**290 pruebas** en verde. Detalle de qué cubre cada archivo y los resultados de la
 demostración extremo a extremo en [`docs/PRUEBAS.md`](docs/PRUEBAS.md).
 
 ## Alcance de esta entrega

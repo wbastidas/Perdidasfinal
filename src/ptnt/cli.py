@@ -771,5 +771,156 @@ def crear_usuario(
     console.print(f"[green]✓[/] Usuario '{usuario}' ({rol}) creado en {cfg.seguridad.ruta_usuarios}")
 
 
+
+@app.command()
+def registrar_carga(
+    insumo: str = typer.Option(..., "--insumo",
+                               help="PADRON_COMERCIAL|RED|CABECERA|MULTADOS|SIG_CLIENTES|JERARQUIA"),
+    alimentadores: str = typer.Option(..., "--alimentadores",
+                                      help="Códigos separados por coma, o @archivo.txt"),
+    origen: str = typer.Option("", "--origen", help="Archivo, base o responsable"),
+    desde: str = typer.Option(None, "--desde", help="Período desde (YYYY-MM)"),
+    hasta: str = typer.Option(None, "--hasta", help="Período hasta (YYYY-MM)"),
+    config: str = _CONFIG_OPT,
+):
+    """Declara el alcance de una carga parcial de información (D06).
+
+    La información no llega toda junta. Declarar qué entró permite que un
+    consolidado incompleto se marque PARCIAL en vez de leerse como el total.
+    """
+
+    from ptnt.ingest import AlcanceCarga, Insumo
+
+    cfg = _cargar(config)
+    try:
+        ins = Insumo(insumo.upper())
+    except ValueError:
+        console.print(f"[red]Insumo desconocido: {insumo}[/]")
+        console.print(f"Válidos: {', '.join(i.value for i in Insumo)}")
+        raise typer.Exit(code=2)
+
+    if alimentadores.startswith("@"):
+        ruta = Path(alimentadores[1:])
+        if not ruta.exists():
+            console.print(f"[red]No existe el archivo: {ruta}[/]")
+            raise typer.Exit(code=2)
+        lista = [x.strip() for x in ruta.read_text().splitlines() if x.strip()]
+    else:
+        lista = [x.strip() for x in alimentadores.split(",") if x.strip()]
+    if not lista:
+        console.print("[red]No se indicó ningún alimentador.[/]")
+        raise typer.Exit(code=2)
+
+    alcance = AlcanceCarga.load(cfg.carga_parcial.ruta_alcance)
+    if cfg.carga_parcial.universo_alimentadores:
+        alcance.universo_alimentadores = list(cfg.carga_parcial.universo_alimentadores)
+    carga = alcance.registrar(ins, lista, origen=origen,
+                              periodo_desde=desde, periodo_hasta=hasta)
+    ruta = alcance.save(cfg.carga_parcial.ruta_alcance)
+
+    console.print(f"[green]✓[/] Registrados {len(lista)} alimentador(es) de "
+                  f"[cyan]{ins.value}[/] · alcance en {ruta}")
+    for adv in carga.advertencias:
+        console.print(f"[yellow]⚠ {adv}[/]")
+
+    tabla = Table(title="Cobertura por insumo")
+    for c in ("Insumo", "Cargados", "Esperados", "Cobertura", "Estado"):
+        tabla.add_column(c, justify="right" if c != "Insumo" else "left")
+    for _, r in alcance.resumen().iterrows():
+        color = {"COMPLETA": "green", "PARCIAL": "yellow", "VACIA": "red"}[r["estado"]]
+        tabla.add_row(r["insumo"], f"{r['alimentadores_cargados']:,}",
+                      f"{r['esperados']:,}", f"{r['cobertura_pct']:.1f}%",
+                      f"[{color}]{r['estado']}[/]")
+    console.print(tabla)
+
+    listos = alcance.listos_para_balance_medido()
+    console.print(f"\nListos para balance [bold]MEDIDO[/] (padrón + red + cabecera): "
+                  f"[cyan]{len(listos)}[/] alimentador(es)")
+
+
+@app.command()
+def consolidar(
+    balance: str = typer.Option("outputs/balance_alimentadores.csv", "--balance"),
+    nivel: str = typer.Option("SUBESTACION", "--nivel",
+                              help="UNIDAD_NEGOCIO|SUBESTACION|ALIMENTADOR"),
+    registrar_historico: bool = typer.Option(
+        False, "--historico/--no-historico",
+        help="Guarda una instantánea en el histórico de balance"),
+    periodo: str = typer.Option(None, "--periodo", help="Período (YYYY-MM)"),
+    config: str = _CONFIG_OPT,
+):
+    """Consolida el balance por unidad de negocio y subestación.
+
+    La energía se suma hacia arriba; la credibilidad no: basta un alimentador
+    INDICATIVO para que el consolidado no pueda presentarse como MEDIDO.
+    """
+
+    from ptnt.org import (
+        agregar_balance, jerarquia_desde_alimentadores, load_jerarquia,
+    )
+
+    cfg = _cargar(config)
+    if not Path(balance).exists():
+        console.print(f"[red]No existe el balance: {balance}[/]")
+        console.print("Genérelo con [cyan]ptnt analizar-red[/].")
+        raise typer.Exit(code=2)
+
+    df = pd.read_csv(balance)
+    if cfg.organizacion.catalogo and Path(cfg.organizacion.catalogo).exists():
+        jer = load_jerarquia(cfg.organizacion.catalogo)
+    elif cfg.organizacion.inferir_si_falta:
+        jer = jerarquia_desde_alimentadores(
+            df["alimentador"].astype(str).tolist(),
+            separador=cfg.organizacion.separador_codigo)
+    else:
+        console.print("[red]Sin catálogo organizacional "
+                      "(`organizacion.catalogo`).[/]")
+        raise typer.Exit(code=2)
+    for adv in jer.advertencias:
+        console.print(f"[yellow]⚠ {adv}[/]")
+
+    agregados = agregar_balance(df, jer)
+    d = agregados[nivel.upper()]
+
+    if "tipo_balance" in d.columns:
+        no_medidos = int((d["tipo_balance"] != "MEDIDO").sum())
+        if no_medidos:
+            console.print(
+                f"[bold yellow]⚠ {no_medidos} de {len(d)} consolidados NO son "
+                "MEDIDO: su PNT es estimación, no debe presentarse como "
+                "verificada.[/]")
+
+    tabla = Table(title=f"Consolidado por {nivel.upper()}")
+    cols = [c for c in ("unidad_negocio", "subestacion", "alimentador",
+                        "entrada_kwh", "pnt_kwh", "pnt_pct", "alimentadores",
+                        "tipo_balance", "alimentadores_indicativos")
+            if c in d.columns]
+    for c in cols:
+        tabla.add_column(c, justify="right" if "kwh" in c or "pct" in c else "left")
+    for _, r in d.head(30).iterrows():
+        tabla.add_row(*[
+            f"{r[c]:,.0f}" if isinstance(r[c], (int, float)) and "pct" not in c
+            else (f"{r[c]:.2f}" if "pct" in c else str(r[c]))
+            for c in cols])
+    console.print(tabla)
+
+    salida = Path(cfg.rutas.salidas) / f"consolidado_{nivel.lower()}.csv"
+    salida.parent.mkdir(parents=True, exist_ok=True)
+    d.to_csv(salida, index=False)
+    console.print(f"[green]✓[/] {salida}")
+
+    if registrar_historico and cfg.historico.habilitado:
+        from ptnt.config.loader import config_hash
+        from ptnt.store.history import HistoricoBalance
+
+        per = periodo or cfg.comercial.mes_final[:7]
+        hist = HistoricoBalance.load(cfg.historico.ruta)
+        n = hist.registrar(agregados, periodo=per,
+                           config_hash=config_hash(cfg)[:12])
+        ruta = hist.save()
+        console.print(f"[green]✓[/] {n} instantánea(s) del período {per} en {ruta}")
+        for adv in hist.advertencias():
+            console.print(f"[yellow]⚠ {adv}[/]")
+
 if __name__ == "__main__":  # pragma: no cover
     app()

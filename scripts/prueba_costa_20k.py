@@ -377,6 +377,8 @@ def main() -> int:
             "v_min_pu": round(g.v_min_pu, 4),
         })
     df_bal = pd.DataFrame(balances).sort_values("pnt_pct", ascending=False)
+    # El tablero y el consolidado organizacional leen este archivo.
+    df_bal.to_csv(salidas / "balance_alimentadores.csv", index=False)
     print(f"  {len(esc.redes)} alimentadores analizados en {time.time()-t:.1f} s")
     print(df_bal.to_string(index=False))
 
@@ -806,8 +808,110 @@ def main() -> int:
     ]), max_filas=40)
     publicar(inf, salidas, "etapa8_plan_campo")
 
-    # ====================================================================== 9
-    paso(9, "RESUMEN EJECUTIVO: ¿A QUÉ NIVEL HAY QUE ATACAR?")
+    # ====================================================================== 8b
+    paso(9, "CONSOLIDADO POR UNIDAD DE NEGOCIO Y SUBESTACIÓN")
+    from ptnt.ingest import AlcanceCarga, Insumo
+    from ptnt.org import agregar_balance, load_jerarquia
+    from ptnt.store.history import HistoricoBalance
+
+    jer = load_jerarquia(esc.csv_jerarquia)
+    agregados = agregar_balance(df_bal, jer)
+    for nivel in ("UNIDAD_NEGOCIO", "SUBESTACION"):
+        sub(nivel)
+        print(agregados[nivel].to_string(index=False))
+        agregados[nivel].to_csv(
+            salidas / f"consolidado_{nivel.lower()}.csv", index=False)
+
+    # Alcance de la carga: en esta prueba entró todo, pero se declara igual para
+    # que el consolidado pueda afirmar que es completo en vez de suponerlo.
+    alcance = AlcanceCarga(universo_alimentadores=list(esc.redes))
+    todos = list(esc.redes)
+    for insumo in (Insumo.PADRON_COMERCIAL, Insumo.RED, Insumo.CABECERA,
+                   Insumo.MULTADOS, Insumo.SIG_CLIENTES, Insumo.JERARQUIA):
+        alcance.registrar(insumo, todos, origen="escenario_costa")
+    alcance.save(salidas / "alcance_carga.json")
+    sub("Cobertura de la carga")
+    print(alcance.resumen().to_string(index=False))
+
+    # Histórico: se registran los 12 meses de cabecera como instantáneas, para
+    # que el tablero de evolución tenga una serie real que mostrar.
+    hist = HistoricoBalance.load(salidas / "historico_balance.parquet")
+    piv_h = cabecera.pivot_table(index="period", columns="feeder_code",
+                                 values="kwh_delivered", aggfunc="sum").sort_index()
+    for periodo in piv_h.index:
+        escala = piv_h.loc[periodo] / piv_h.iloc[-1]
+        mes = df_bal.copy()
+        mes["entrada_kwh"] = mes["alimentador"].map(escala) * mes["entrada_kwh"]
+        mes["pnt_kwh"] = mes["alimentador"].map(escala) * mes["pnt_kwh"]
+        mes["perdidas_totales_kwh"] = (
+            mes["alimentador"].map(escala) * mes["perdidas_totales_kwh"])
+        hist.registrar(agregar_balance(mes, jer), periodo=str(periodo),
+                       config_hash=m.get("config_hash", "")[:12])
+    ruta_hist = hist.save()
+    print(f"\n  Histórico: {len(hist.df):,} instantáneas en "
+          f"{len(hist.periodos)} períodos -> {ruta_hist.name}")
+    for adv in hist.advertencias():
+        print(f"  ⚠ {adv}")
+
+    inf = Informe("Etapa 9 · Consolidado",
+                  "Unidad de negocio, subestación e histórico",
+                  "La energía se suma hacia arriba; la credibilidad no")
+    inf.texto(
+        "El presupuesto de un plan de reducción de pérdidas se decide por "
+        "<b>unidad de negocio</b> y la operación se coordina por "
+        "<b>subestación</b>. Sin esos dos niveles el sistema produce números "
+        "correctos que nadie puede firmar.")
+    un = agregados["UNIDAD_NEGOCIO"]
+    inf.kpis([
+        ("Unidades de negocio", f"{len(un)}", "consolidadas"),
+        ("Subestaciones", f"{len(agregados['SUBESTACION'])}", "en el universo"),
+        ("Períodos en el histórico", f"{len(hist.periodos)}", "serie disponible"),
+        ("Cobertura de carga", "100 %", "universo declarado completo"),
+    ], ["", "", "ok", "ok"])
+
+    inf.seccion("Por unidad de negocio")
+    inf.tabla(un)
+    inf.seccion("Por subestación")
+    se = agregados["SUBESTACION"]
+    inf.tabla(se, max_filas=20)
+    inf.grafico(barras_horizontales(
+        se["subestacion"].tolist(), se["pnt_pct"].tolist(),
+        titulo="PNT por subestación (%)", unidad=" %", destacar=3))
+    inf.nota(
+        "Los porcentajes se <b>recalculan sobre los totales</b>, nunca se "
+        "promedian: un alimentador de 700 MWh al 4 % y uno de 4 400 MWh al 6 % "
+        "no dan 5 % en conjunto. Y el tipo de balance del consolidado es el "
+        "<b>peor de sus hijos</b> — basta un INDICATIVO para que no pueda "
+        "presentarse como medido.")
+
+    inf.seccion("Cobertura de la carga")
+    inf.tabla(alcance.resumen())
+    inf.nota(
+        "El alcance de cada carga se declara explícitamente. Un consolidado de "
+        "subestación calculado sobre 3 de sus 8 alimentadores no es el balance de "
+        "esa subestación: es el de tres de sus alimentadores, y el sistema lo "
+        "marca <b>PARCIAL</b> en vez de dejar que se lea como el total.")
+
+    inf.seccion("Evolución histórica")
+    serie_un = {}
+    for u in un["unidad_negocio"].head(4):
+        s_u = hist.serie(u, nivel="UNIDAD_NEGOCIO", metrica="pnt_pct")
+        if not s_u.empty:
+            serie_un[u] = s_u["pnt_pct"].tolist()
+    if serie_un:
+        inf.grafico(lineas_temporales(
+            hist.periodos, serie_un,
+            titulo="PNT por unidad de negocio a lo largo del tiempo", unidad="%"))
+    inf.nota(
+        "Cada instantánea guarda el <b>hash de configuración</b> con que se "
+        "calculó. Dos puntos calculados con configuraciones distintas no son "
+        "comparables, y el sistema lo advierte en vez de dibujar una línea "
+        "continua entre ellos — atribuir a la red un cambio que fue de "
+        "parámetros es una forma silenciosa de mentir con un gráfico.")
+    publicar(inf, salidas, "etapa9_consolidado")
+
+    # ====================================================================== 10
+    paso(10, "RESUMEN EJECUTIVO: ¿A QUÉ NIVEL HAY QUE ATACAR?")
 
     # Regla de decisión: para cada nivel, cuánta energía recupera una visita y
     # cuántos clientes cubre. El nivel ganador es el de mayor energía por visita

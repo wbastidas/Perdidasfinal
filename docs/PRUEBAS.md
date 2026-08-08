@@ -30,6 +30,7 @@ pytest --cov=ptnt --cov-report=term-missing   # con cobertura
 | `test_catalog_lv.py` | **Catálogo CATALOGOESTRUCTURA** (clasificación por prefijo, kVA/banco, balastro AP, kVAR, doble nivel), **agregación LV al transformador** sin doble conteo en tronco, **totalizador** (no re-suma individuales), **semáforos/cámaras** como AP no medido, balastro desde catálogo |
 | `test_segmentacion.py` | **Clasificación de tarifas reales** (texto libre de DESTARI, no se adivina residencial), **resolución semántica de la clave del catálogo** (evita que los industriales caigan a la clase por defecto), **grupo par jerárquico** (nivel más fino disponible, degradación, sin grupo se reporta, confianza pondera S5), **el estrato NO entra en el grupo par** (regresión crítica: sería circular), **S9** (déficit contra la base propia), **recuperable segmentado** (el global subestima al industrial e inventa al pequeño; máximo de dos estimadores; mediana robusta), **rendimiento por visita** (ordena por valor, no por score) y **grandes clientes** (solo con indicios reales) |
 | `test_escenario_costa_reportes.py` | **Escenario costero** (estacionalidad de Costa y no de Sierra, coordenadas UTM 17S, mezcla realista de clases, rutas con vocación, hurto concentrado en periferia, Tarifa Dignidad solo bajo el techo, las redes llevan clientes reales del padrón, alimentadores distintos entre sí, **cabecera cubre el facturado**), **motor de informes** (enteros sin decimales, tabla vacía y filas omitidas, SVG válido y sin datos, **el mapa conserva la escala real del terreno**, HTML autocontenido, **escapa el contenido de la base de origen**, compendio con saltos de página) |
+| `test_org_carga_historico.py` | **Jerarquía organizacional** (catálogo, columnas obligatorias, alimentador repetido, inferencia advertida, la energía suma hacia arriba, **los porcentajes se recalculan y no se promedian**, **un solo INDICATIVO degrada todo el consolidado**), **carga parcial** (cobertura y faltantes, cargas acumulables, balance MEDIDO exige padrón+red+cabecera, alimentador fuera del universo, pendientes, persistencia, **consolidado incompleto se marca PARCIAL**), **histórico** (serie, re-registro reemplaza, comparación con tendencia, **cambio de configuración invalida la comparación**, advertencias, persistencia, vacío) |
 | `test_locations_versioning.py` | **Identidad geográfica estable** (código determinista, agrupa coordenadas cercanas, sectores conservan ubicación al cargar datos nuevos y ante reordenamiento), **registro persistente** (acumula priorizaciones sin inflar por re-ejecución, reincidencia, cierre por inspección, persistencia en disco), **versionado de topología** (alta, sin cambio, cada hash reacciona solo a su dominio, invalidación selectiva por tipo de cambio, historial, **las ubicaciones sobreviven al cambio de red**) |
 
 **Propiedades verificadas (hypothesis):**
@@ -137,7 +138,7 @@ tests los fijan como garantía de regresión.
 ## Estado actual
 
 ```
-267 passed
+290 passed
 ```
 
 Cobertura del núcleo de dominio (objetivo de la especificación ≥ 85 %):

@@ -222,6 +222,38 @@ segmentacion:
   umbral_gran_cliente_kwh_mes: 5000.0    # revisión individual, no por ranking relativo
 
 # -----------------------------------------------------------------------------
+# Jerarquía organizacional: Unidad de Negocio -> Subestación -> Alimentador
+#
+# Sin este catálogo el sistema solo razona desde el alimentador hacia abajo, que
+# basta para el análisis técnico pero no para la gestión: el presupuesto se
+# decide por unidad de negocio y la operación por subestación.
+# Formato del CSV: feeder_code, subestacion, unidad_negocio[, nombre, tension_kv]
+# -----------------------------------------------------------------------------
+organizacion:
+  catalogo: null                    # p.ej. "config/jerarquia.csv"
+  inferir_si_falta: true            # deducir la UN del prefijo del código
+  separador_codigo: "-"             # "GYE-01" -> UN "GYE"
+
+# -----------------------------------------------------------------------------
+# Carga parcial de información (D06)
+#
+# La información no llega toda junta. Se declara el alcance de cada carga para
+# que un consolidado incompleto se marque PARCIAL en vez de leerse como total.
+# -----------------------------------------------------------------------------
+carga_parcial:
+  ruta_alcance: "outputs/alcance_carga.json"
+  universo_alimentadores: []        # vacío = el universo es lo que se cargó
+  cobertura_minima_pct: 99.9        # por debajo, el consolidado se marca PARCIAL
+
+# -----------------------------------------------------------------------------
+# Histórico de balance (tablero de evolución)
+# -----------------------------------------------------------------------------
+historico:
+  habilitado: true
+  ruta: "outputs/historico_balance.parquet"
+  min_periodos_tendencia: 3
+
+# -----------------------------------------------------------------------------
 # Catálogos de red
 # -----------------------------------------------------------------------------
 catalogos:

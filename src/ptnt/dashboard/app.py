@@ -156,9 +156,10 @@ def main() -> None:
         f"Método de demanda: **{met.get('metodo_demanda','-')}**"
     )
 
-    tab0, tab1, tab2, tab3, tab4 = st.tabs(
+    tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
         ["📍 Dónde inspeccionar", "🎯 Sospecha de hurto",
-         "🔌 Reconciliación de potencia", "📈 Cliente", "⚖️ Balance de red"]
+         "🔌 Reconciliación de potencia", "📈 Cliente", "⚖️ Balance de red",
+         "🏢 Unidad y subestación", "📅 Histórico", "📥 Carga de datos"]
     )
 
     # -- V7: focalización de levantamientos (§11.5) --------------------------
@@ -318,6 +319,214 @@ def main() -> None:
             if tot:
                 st.write("**Señal N3 — balance de totalizador (diferencia totalizador − individuales):**")
                 st.dataframe(pd.DataFrame(tot), use_container_width=True, hide_index=True)
+
+
+    # -- V10: jerarquía organizacional (UN → subestación → alimentador) -------
+    with tab5:
+        st.subheader("Consolidado por unidad de negocio y subestación")
+        st.caption(
+            "El presupuesto se decide por unidad de negocio y la operación por "
+            "subestación. La energía se suma hacia arriba; la **credibilidad no**: "
+            "basta un alimentador sin medición confiable para que el consolidado "
+            "no pueda presentarse como MEDIDO."
+        )
+        bal_path = Path(cfg.rutas.salidas) / "balance_alimentadores.csv"
+        if not bal_path.exists():
+            st.info(
+                "Sin balance por alimentador. Ejecute `ptnt analizar-red` para "
+                "cada alimentador, o la prueba a escala "
+                "`python scripts/prueba_costa_20k.py`."
+            )
+        else:
+            from ptnt.org import (
+                agregar_balance, jerarquia_desde_alimentadores, load_jerarquia,
+            )
+
+            df_bal = pd.read_csv(bal_path)
+            if cfg.organizacion.catalogo and Path(cfg.organizacion.catalogo).exists():
+                jer = load_jerarquia(cfg.organizacion.catalogo)
+            else:
+                jer = jerarquia_desde_alimentadores(
+                    df_bal["alimentador"].astype(str).tolist(),
+                    separador=cfg.organizacion.separador_codigo)
+                for adv in jer.advertencias:
+                    st.warning(adv)
+
+            agregados = agregar_balance(df_bal, jer)
+
+            nivel = st.radio(
+                "Nivel de consolidación", ["UNIDAD_NEGOCIO", "SUBESTACION",
+                                           "ALIMENTADOR"],
+                horizontal=True, key="nivel_org")
+            d = agregados[nivel]
+
+            if "tipo_balance" in d.columns:
+                no_medidos = int((d["tipo_balance"] != "MEDIDO").sum())
+                if no_medidos:
+                    st.error(
+                        f"{no_medidos} de {len(d)} consolidados NO son MEDIDO. "
+                        "Su PNT es una estimación y no debe presentarse como "
+                        "verificada."
+                    )
+                else:
+                    st.success("Todos los consolidados de este nivel son MEDIDO.")
+
+            if {"pnt_kwh", "entrada_kwh"} <= set(d.columns):
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Entrada total", f"{d['entrada_kwh'].sum():,.0f} kWh")
+                c2.metric("PNT total", f"{d['pnt_kwh'].sum():,.0f} kWh")
+                pct = (d["pnt_kwh"].sum() / max(d["entrada_kwh"].sum(), 1e-9) * 100)
+                c3.metric("PNT global", f"{pct:.2f} %")
+
+            st.dataframe(d, use_container_width=True, hide_index=True)
+            if "pnt_pct" in d.columns:
+                etq = ("unidad_negocio" if nivel == "UNIDAD_NEGOCIO"
+                       else "subestacion" if nivel == "SUBESTACION"
+                       else "alimentador")
+                if etq in d.columns:
+                    st.bar_chart(d.set_index(etq)["pnt_pct"], height=280)
+            st.download_button(
+                f"Descargar consolidado {nivel} (CSV)",
+                d.to_csv(index=False).encode("utf-8"),
+                file_name=f"consolidado_{nivel.lower()}.csv", mime="text/csv")
+
+            with st.expander("Catálogo organizacional en uso"):
+                st.dataframe(jer.to_dataframe(), use_container_width=True,
+                             hide_index=True)
+
+    # -- V11: histórico de balance -------------------------------------------
+    with tab6:
+        st.subheader("Evolución histórica de la PNT")
+        st.caption(
+            "Una foto no sirve para gestionar: lo que dice si un plan funciona es "
+            "la serie. Y un salto que coincide con una recarga de datos es un "
+            "problema de datos, no un hurto masivo."
+        )
+        from ptnt.store.history import HistoricoBalance
+
+        hist = HistoricoBalance.load(cfg.historico.ruta)
+        if hist.df.empty:
+            st.info(
+                "Histórico vacío. Cada corrida de `ptnt analizar-red` con "
+                "`historico.habilitado: true` agrega una instantánea."
+            )
+        else:
+            for adv in hist.advertencias():
+                st.warning(adv)
+
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Períodos registrados", f"{len(hist.periodos):,}")
+            c2.metric("Instantáneas", f"{len(hist.df):,}")
+            c3.metric("Entidades", f"{hist.df['entidad'].nunique():,}")
+
+            nivel_h = st.selectbox(
+                "Nivel", sorted(hist.df["nivel"].dropna().unique()), key="nivel_hist")
+            ents = sorted(hist.df.loc[hist.df["nivel"] == nivel_h,
+                                      "entidad"].dropna().unique())
+            sel = st.multiselect("Entidades a graficar", ents, default=ents[:5])
+            metrica = st.radio("Métrica", ["pnt_pct", "pnt_kwh",
+                                           "perdidas_totales_kwh"],
+                               horizontal=True, key="met_hist")
+            if sel:
+                series = {}
+                for e in sel:
+                    s_e = hist.serie(e, nivel=nivel_h, metrica=metrica)
+                    if not s_e.empty:
+                        series[e] = s_e.set_index("periodo")[metrica]
+                if series:
+                    st.line_chart(pd.DataFrame(series), height=320)
+
+            if len(hist.periodos) >= 2:
+                st.markdown("#### Comparación entre períodos")
+                cc1, cc2 = st.columns(2)
+                pa = cc1.selectbox("Período base", hist.periodos,
+                                   index=0, key="per_a")
+                pb = cc2.selectbox("Período a comparar", hist.periodos,
+                                   index=len(hist.periodos) - 1, key="per_b")
+                comp = hist.comparar_periodos(pa, pb, nivel=nivel_h)
+                if comp.empty:
+                    st.info("Sin datos comunes entre esos períodos.")
+                else:
+                    incomparables = int((~comp["comparable"]).sum())
+                    if incomparables:
+                        st.warning(
+                            f"{incomparables} entidad(es) se calcularon con "
+                            "configuraciones distintas: esa variación NO es una "
+                            "tendencia de la red."
+                        )
+                    st.dataframe(comp, use_container_width=True, hide_index=True)
+
+    # -- V12: carga parcial de información -----------------------------------
+    with tab7:
+        st.subheader("Carga de información y cobertura")
+        st.caption(
+            "La información no llega toda junta. Aquí se declara el alcance de "
+            "cada carga para que un consolidado incompleto se marque **PARCIAL** "
+            "en vez de leerse como el total de la entidad."
+        )
+        from ptnt.ingest import AlcanceCarga, Insumo
+
+        alcance = AlcanceCarga.load(cfg.carga_parcial.ruta_alcance)
+        if cfg.carga_parcial.universo_alimentadores:
+            alcance.universo_alimentadores = list(
+                cfg.carga_parcial.universo_alimentadores)
+
+        resumen_cob = alcance.resumen()
+        completos = int((resumen_cob["estado"] == "COMPLETA").sum())
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Insumos completos", f"{completos}/{len(resumen_cob)}")
+        c2.metric("Universo declarado",
+                  f"{len(alcance.universo_alimentadores):,} alimentadores")
+        c3.metric("Listos para balance MEDIDO",
+                  f"{len(alcance.listos_para_balance_medido()):,}",
+                  help="Requiere padrón + red + cabecera del mismo alimentador")
+
+        st.dataframe(resumen_cob, use_container_width=True, hide_index=True)
+
+        pend = alcance.pendientes()
+        if not pend.empty:
+            st.markdown("#### Pendientes por cargar")
+            st.caption("Es la lista de trabajo: qué insumo falta de qué alimentador.")
+            st.dataframe(pend.head(200), use_container_width=True, hide_index=True)
+            st.download_button("Descargar pendientes (CSV)",
+                               pend.to_csv(index=False).encode("utf-8"),
+                               file_name="pendientes_carga.csv", mime="text/csv")
+
+        st.markdown("#### Registrar una carga")
+        with st.form("registrar_carga"):
+            f1, f2 = st.columns(2)
+            insumo_sel = f1.selectbox("Insumo cargado", [i.value for i in Insumo])
+            origen = f2.text_input("Origen (archivo, base, responsable)", "")
+            alis = st.text_area(
+                "Alimentadores incluidos (uno por línea o separados por coma)", "")
+            g1, g2 = st.columns(2)
+            desde = g1.text_input("Período desde (YYYY-MM)", "")
+            hasta = g2.text_input("Período hasta (YYYY-MM)", "")
+            if st.form_submit_button("Registrar carga"):
+                lista = [a.strip() for a in alis.replace(",", "\n").split("\n")
+                         if a.strip()]
+                if not lista:
+                    st.error("Indique al menos un alimentador.")
+                else:
+                    carga = alcance.registrar(
+                        Insumo(insumo_sel), lista, origen=origen,
+                        periodo_desde=desde or None, periodo_hasta=hasta or None)
+                    ruta = alcance.save(cfg.carga_parcial.ruta_alcance)
+                    st.success(
+                        f"Registrada: {len(lista)} alimentador(es) de "
+                        f"{insumo_sel}. Alcance guardado en {ruta}.")
+                    for adv in carga.advertencias:
+                        st.warning(adv)
+
+        with st.expander("Historial de cargas"):
+            if alcance.cargas:
+                st.dataframe(
+                    pd.DataFrame([c.to_dict() for c in alcance.cargas])
+                    [["insumo", "n_alimentadores", "registros", "periodo_desde",
+                      "periodo_hasta", "origen", "cargado_en"]],
+                    use_container_width=True, hide_index=True)
+            else:
+                st.caption("Sin cargas registradas todavía.")
 
 
 if __name__ == "__main__":  # pragma: no cover

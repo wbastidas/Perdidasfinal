@@ -125,6 +125,7 @@ class EscenarioCosta:
     csv_cabecera: Path
     csv_multados: Path
     csv_sig: Path
+    csv_jerarquia: Path
     redes: dict[str, NetworkModel]              # alimentador -> red
     head_energy_kwh: dict[str, float]           # alimentador -> kWh de cabecera
     padron: pd.DataFrame                        # con metadatos _hurto, _zona
@@ -194,6 +195,18 @@ def build_escenario_costa(
     rng = np.random.default_rng(semilla)
 
     alimentadores = [f"GYE-{i:02d}" for i in range(1, n_alimentadores + 1)]
+
+    # Jerarquía organizacional: los alimentadores se reparten entre subestaciones
+    # reales del área, y estas entre unidades de negocio. Es la estructura con la
+    # que se decide el presupuesto (UN) y se coordina la operación (S/E).
+    _SUBESTACIONES = [
+        ("GUAYAQUIL", "Pascuales"), ("GUAYAQUIL", "Nueva Prosperina"),
+        ("GUAYAQUIL", "Trinitaria"), ("GUAYAQUIL", "Esclusas"),
+        ("MILAGRO", "Durán Sur"), ("MILAGRO", "Milagro Centro"),
+    ]
+    org: dict[str, tuple[str, str]] = {}
+    for i, a in enumerate(alimentadores):
+        org[a] = _SUBESTACIONES[i % len(_SUBESTACIONES)]
 
     # --- 1. Zonificación: cada ruta de lectura pertenece a una zona -----------
     rutas: list[str] = []
@@ -418,6 +431,14 @@ def build_escenario_costa(
     csv_sig = d / "sig_clientes_costa.csv"
     pd.DataFrame({"contract_account": en_sig + fantasmas}).to_csv(csv_sig, index=False)
 
+    # --- 7. Catálogo organizacional ------------------------------------------
+    csv_jerarquia = d / "jerarquia_costa.csv"
+    pd.DataFrame([
+        {"feeder_code": a, "subestacion": org[a][1], "unidad_negocio": org[a][0],
+         "nombre": f"Alimentador {a}", "tension_kv": 13.8}
+        for a in alimentadores
+    ]).to_csv(csv_jerarquia, index=False)
+
     resumen = {
         "region": "Costa — área Guayaquil/Durán (UTM 17S, EPSG:32717)",
         "clientes": n_clientes,
@@ -435,6 +456,8 @@ def build_escenario_costa(
                          f"({magnitud:,.0f} kWh)",
         "clientes_sin_sig": len(sin_sig),
         "clientes_sig_sin_facturacion": len(fantasmas),
+        "unidades_de_negocio": len({v[0] for v in org.values()}),
+        "subestaciones": len({v[1] for v in org.values()}),
         "estacionalidad": "costera (pico ene–abr por climatización)",
         "tarifa_dignidad_kwh": TARIFA_DIGNIDAD_KWH,
     }
@@ -442,6 +465,7 @@ def build_escenario_costa(
     return EscenarioCosta(
         directorio=d, csv_consumos=csv_consumos, csv_cabecera=csv_cabecera,
         csv_multados=csv_multados, csv_sig=csv_sig,
+        csv_jerarquia=csv_jerarquia,
         redes=redes, head_energy_kwh=head_kwh, padron=padron,
         hurtos_reales=hurtos, multados=multados,
         transferencia={"origen": f_origen, "destino": f_destino,
