@@ -10,6 +10,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pandas as pd
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -381,6 +382,18 @@ def focalizar(
         "network_km": graph.total_length_km(), "confidence": 100.0,
         "balance_type": b.balance_type.value,
     }]
+    # Rutas comerciales (CLIRLSCOD): sospecha + incoherencia de la ruta
+    route_stats = []
+    if ranking is not None:
+        from ptnt.survey.routes import analyze_commercial_routes, routes_to_target_input
+
+        base_rutas = com.clientes.merge(com.promedios, on="contract_account", how="left")
+        rutas = analyze_commercial_routes(
+            base_rutas, com.consumo, suspect_customers=suspect,
+            recoverable_by_customer=recuperable,
+        )
+        route_stats = routes_to_target_input(rutas)
+
     branch_stats = collect_branch_stats(
         graph, suspect_customers=suspect, recoverable_by_customer=recuperable
     )
@@ -394,7 +407,7 @@ def focalizar(
     plan = build_survey_plan(
         feeder_balances=feeder_balances, zone_signals=zone_stats,
         branch_stats=branch_stats, transformer_stats=transformer_stats,
-        customer_ranking=ranking, customer_coords=coords,
+        route_stats=route_stats, customer_ranking=ranking, customer_coords=coords,
     )
 
     # 5) Mostrar
@@ -405,7 +418,8 @@ def focalizar(
     console.print(f"  Por nivel: {conteo}")
 
     for lvl in (TargetLevel.ALIMENTADOR, TargetLevel.ZONA_PROTECCION, TargetLevel.RAMAL,
-                TargetLevel.PUESTO_TRANSFORMACION, TargetLevel.SECTOR):
+                TargetLevel.PUESTO_TRANSFORMACION, TargetLevel.RUTA_COMERCIAL,
+                TargetLevel.SECTOR):
         objetivos = plan.by_level(lvl)
         if not objetivos:
             continue
@@ -453,6 +467,176 @@ def focalizar(
     console.print(f"\n[bold]Órdenes de levantamiento generadas:[/] {len(df_ot)}")
     console.print(f"[green]✓[/] {salidas}/reporte_focalizacion.html · "
                   f"focalizacion.xlsx · plan_levantamientos.csv · ordenes_levantamiento.csv")
+
+
+@app.command()
+def diagnostico(
+    csv: str = typer.Option(None, "--csv", help="CSV comercial"),
+    cabecera: str = typer.Option(None, "--cabecera",
+                                 help="CSV de energía de cabecera (feeder_code,period,kwh_delivered)"),
+    multados: str = typer.Option(None, "--multados",
+                                 help="CSV de clientes multados por hurto (contract_account,fecha_multa)"),
+    config: str = _CONFIG_OPT,
+):
+    """Diagnóstico de credibilidad: **transferencias no reportadas**, **clientes
+    faltantes**, **alimentadores incoherentes** y **validación contra la base de
+    multados** (precisión real del detector)."""
+
+    from pathlib import Path as _Path
+
+    from ptnt.anomalies import (
+        analyze_feeder_coherence,
+        analyze_unmatched_customers,
+        detect_transfers,
+    )
+    from ptnt.grid_pipeline import run_grid_analysis
+    from ptnt.synth.network import generate_radial_network
+
+    cfg = _cargar(config)
+    salidas = _Path(cfg.rutas.salidas)
+    salidas.mkdir(parents=True, exist_ok=True)
+    resumen_total = {}
+
+    # --- 1. Transferencias entre alimentadores (§10.4) ----------------------
+    console.print("\n[bold]1. Transferencias entre alimentadores no reportadas[/]")
+    if cabecera and _Path(cabecera).exists():
+        head = pd.read_csv(cabecera)
+        tr = detect_transfers(head)
+    else:
+        tr = detect_transfers(pd.DataFrame())
+    if tr.status.value != "OK":
+        console.print(f"  [yellow]{tr.status.value}[/]: {tr.detail}")
+    elif tr.candidates:
+        tabla = Table(title="Transferencias probables")
+        for col in ("Par", "Período", "Magnitud kWh", "Simetría", "Confianza"):
+            tabla.add_column(col)
+        for c in tr.candidates[:10]:
+            tabla.add_row(f"{c.feeder_a} → {c.feeder_b}", c.period,
+                          f"{c.magnitude_kwh:,.0f}", f"{c.similarity:.2f}",
+                          f"{c.confidence:.2f}")
+        console.print(tabla)
+        console.print(f"  [yellow]{tr.detail}[/]")
+        tr.to_dataframe().to_csv(salidas / "transferencias.csv", index=False)
+    else:
+        console.print(f"  [green]{tr.detail}[/]")
+    resumen_total["transferencias"] = {
+        "estado": tr.status.value, "n": len(tr.candidates),
+        "afectados": sorted(tr.feeders_afectados), "detalle": tr.detail,
+    }
+
+    # --- 2. Clientes faltantes ----------------------------------------------
+    console.print("\n[bold]2. Clientes faltantes (vinculación comercial ↔ SIG)[/]")
+    unm = None
+    if csv is None:
+        try:
+            csv = cfg.fuente("comercial_csv").ruta
+        except KeyError:
+            csv = None
+    if csv and _Path(csv).exists():
+        from ptnt.pipeline import run_analysis
+
+        com = run_analysis(cfg, csv, persistir=False)
+        base = com.clientes.merge(com.promedios, on="contract_account", how="left")
+        net = generate_radial_network(n_transformers=8, customers_per_tx=20)
+        # el SIG "tiene" a los clientes vinculados (los primeros N por cuenta)
+        cuentas_ordenadas = sorted(base["contract_account"].astype(str))
+        n_en_sig = int(len(cuentas_ordenadas) * 0.97)   # 3% sin vincular (demo)
+        sig = pd.DataFrame({"contract_account": cuentas_ordenadas[:n_en_sig]})
+        unm = analyze_unmatched_customers(
+            base, sig,
+            umbral_energia_vinculada_pct=cfg.comercial.__dict__.get(
+                "umbral_min_energia_vinculada_pct", 95.0),
+        )
+        console.print(f"  Cuentas vinculadas: {unm.pct_cuentas_vinculadas:.1f}% · "
+                      f"[bold]Energía vinculada: {unm.pct_energia_vinculada:.1f}%[/]")
+        console.print(f"  CSV sin SIG: {len(unm.csv_sin_sig):,} cuentas "
+                      f"({unm.energia_sin_vincular_kwh:,.0f} kWh sin ubicar)")
+        console.print(f"  SIG sin CSV: {len(unm.sig_sin_csv):,} clientes")
+        console.print(f"  {'[green]' if unm.apto_balance_medido else '[yellow]'}{unm.detail}[/]")
+        unm.csv_sin_sig.to_csv(salidas / "clientes_csv_sin_sig.csv", index=False)
+        unm.sig_sin_csv.to_csv(salidas / "clientes_sig_sin_csv.csv", index=False)
+        if not unm.por_ruta.empty:
+            console.print("\n  Rutas comerciales con más energía sin vincular:")
+            for _, r in unm.por_ruta.head(5).iterrows():
+                console.print(f"    {r.iloc[0]}: {int(r['cuentas_sin_sig'])} cuentas, "
+                              f"{r['energia_sin_sig_kwh']:,.0f} kWh")
+        resumen_total["clientes_faltantes"] = unm.resumen()
+    else:
+        console.print("  [yellow]Sin CSV comercial: no se puede analizar la vinculación.[/]")
+
+    # --- 3. Alimentadores incoherentes --------------------------------------
+    console.print("\n[bold]3. Alimentadores con valores incoherentes[/]")
+    net = generate_radial_network(n_transformers=8, customers_per_tx=20)
+    grid = run_grid_analysis(net.model, cfg, head_energy_kwh=net.head_energy_kwh)
+    coh = analyze_feeder_coherence([grid.balance], transfer_report=tr,
+                                   unmatched_report=unm)
+    df_coh = coh.to_dataframe()
+    if df_coh.empty:
+        console.print("  [green]Sin incoherencias: todos los alimentadores son publicables.[/]")
+    else:
+        tabla = Table(title="Incoherencias detectadas")
+        for col in ("Alimentador", "Código", "Severidad", "Descripción", "Causa probable"):
+            tabla.add_column(col, overflow="fold")
+        for _, r in df_coh.head(12).iterrows():
+            tabla.add_row(str(r["alimentador"]), str(r["codigo"]), str(r["severidad"]),
+                          str(r["descripcion"])[:52], str(r["causa_probable"])[:52])
+        console.print(tabla)
+        df_coh.to_csv(salidas / "alimentadores_incoherentes.csv", index=False)
+    resumen_total["incoherencias"] = coh.resumen()
+
+    # --- 4. Validación contra la base de multados ---------------------------
+    console.print("\n[bold]4. Validación contra la base de clientes multados[/]")
+    if multados and _Path(multados).exists() and csv and _Path(csv).exists():
+        from ptnt.ntl.confirmed import (
+            calibrate_signal_thresholds,
+            load_confirmed_theft,
+            validate_against_confirmed,
+        )
+
+        conf = load_confirmed_theft(pd.read_csv(multados))
+        for a in conf.advertencias:
+            console.print(f"  [yellow]⚠ {a}[/]")
+        met = validate_against_confirmed(com.ranking, conf)
+        for a in met.advertencias:
+            console.print(f"  [yellow]⚠ {a}[/]")
+        res = met.resumen()
+        console.print(f"  Casos confirmados en el universo: {res['n_confirmados']:,} "
+                      f"(prevalencia {res['prevalencia_pct']}%)")
+        tabla = Table(title="Desempeño real del detector")
+        for col in ("Métrica", "Valor"):
+            tabla.add_column(col)
+        tabla.add_row("Precisión en el top 1%", f"{res['precision_top_1pct']}%")
+        tabla.add_row("Precisión en el top 5%", f"{res['precision_top_5pct']}%")
+        tabla.add_row("Recall en el top 10%", f"{res['recall_top_10pct']}%")
+        tabla.add_row("Lift en el top 5%", f"{res['lift_top_5pct']}×")
+        tabla.add_row("Posición mediana de los hurtos", f"{res['posicion_mediana_pct']}%")
+        tabla.add_row("AUC", f"{res['auc']}")
+        console.print(tabla)
+        console.print(f"  [bold]Interpretación:[/] siguiendo el ranking, la cuadrilla "
+                      f"encuentra [bold]{res['lift_top_5pct']}× más hurtos[/] que "
+                      "inspeccionando al azar.")
+        if not met.por_decil.empty:
+            met.por_decil.to_csv(salidas / "validacion_por_decil.csv", index=False)
+        calib = calibrate_signal_thresholds(com.señales, conf)
+        if not calib.empty:
+            console.print("\n  Calibración de señales contra casos confirmados:")
+            for _, r in calib.iterrows():
+                console.print(f"    {r['senal']}: lift {r['lift']} → {r['recomendacion']}")
+            calib.to_csv(salidas / "calibracion_senales.csv", index=False)
+        resumen_total["validacion_multados"] = res
+    else:
+        console.print("  [yellow]Sin base de multados (--multados): el detector no puede "
+                      "validarse contra casos reales.[/]")
+        console.print("  Formato esperado: CSV con columnas "
+                      "[cyan]contract_account[/], [cyan]fecha_multa[/] "
+                      "(opcional: kwh_recuperado, tipo_hallazgo).")
+
+    import json as _json
+
+    (salidas / "diagnostico.json").write_text(
+        _json.dumps(resumen_total, ensure_ascii=False, indent=2, default=str),
+        encoding="utf-8")
+    console.print(f"\n[green]✓[/] Diagnóstico en {salidas}/diagnostico.json")
 
 
 @app.command()

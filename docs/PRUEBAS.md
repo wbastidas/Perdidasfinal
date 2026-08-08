@@ -26,6 +26,7 @@ pytest --cov=ptnt --cov-report=term-missing   # con cobertura
 | `test_advanced.py` | Monte Carlo (percentiles ordenados), **validación del flujo** (<2% error, incl. OpenDSS si está), motor de reglas (detecta R05/R11/R12/R22/R24/R15; red limpia sin hallazgos), exportador OpenDSS, señales de red N1/N3/N4, reporte ejecutivo HTML |
 | `test_3ph_migration.py` | Decodificadores (fase bitmask, kVA, cascada de longitud), **motor trifásico con neutro** (balanceado→neutro 0, desbalanceado→neutro y pérdida; 3φ≈1φ balanceado), **migración de datos** round-trip y desde DuckDB |
 | `test_survey.py` | **Derivación de impedancias** (AWG/kcmil, R vs fabricante <3%, cobertura 415/415, kcmil mal etiquetado), **focalización** (ramales ignoran acometidas, todos los niveles, ramal sin señales no prioritario, baja confiabilidad = problema de datos, sectores por cercanía, órdenes por rendimiento por visita, exportable/reportable) |
+| `test_anomalies_confirmed.py` | **Transferencias** (detecta la inyectada, 1 mes = NO_APLICABLE, pico no es transferencia), **clientes faltantes** (ambos sentidos, umbral de energía, concentración por ruta), **incoherencias** (PNT negativa bloquea publicación, transferencia excluye del ranking), **base de multados** (lift real, control negativo con ranking aleatorio, fecha de corte contra fuga, calibración detecta señal inútil, PU learning), **ruta comercial** (sospecha, incoherencia por ceros/estimadas, nivel del plan) |
 | `test_catalog_lv.py` | **Catálogo CATALOGOESTRUCTURA** (clasificación por prefijo, kVA/banco, balastro AP, kVAR, doble nivel), **agregación LV al transformador** sin doble conteo en tronco, **totalizador** (no re-suma individuales), **semáforos/cámaras** como AP no medido, balastro desde catálogo |
 
 **Propiedades verificadas (hypothesis):**
@@ -79,7 +80,7 @@ sintética y verifica:
 ## Estado actual
 
 ```
-172 passed
+189 passed
 ```
 
 Cobertura del núcleo de dominio (objetivo de la especificación ≥ 85 %):

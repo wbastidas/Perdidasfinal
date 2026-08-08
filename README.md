@@ -35,6 +35,7 @@ datos de la red (esquema **Puesto → Unidad** homologado CNEL EP):
 > Documentación completa en [`docs/`](docs/): [Arquitectura](docs/ARQUITECTURA.md) ·
 > [Instalación en Windows](docs/INSTALACION_WINDOWS.md) ·
 > [Focalización de levantamientos](docs/FOCALIZACION.md) ·
+> [Diagnóstico y validación](docs/DIAGNOSTICO.md) ·
 > [Proceso](docs/PROCESO.md) · [Seguridad](docs/SEGURIDAD.md) ·
 > [Pruebas](docs/PRUEBAS.md).
 
@@ -72,6 +73,7 @@ ptnt servir-visor       # visor de solo lectura  -> http://127.0.0.1:8080
 | `ptnt analizar` | Pipeline comercial: promedio → potencia → reconciliación → hurto |
 | `ptnt migrar` | Migra la red desde la base de origen (FGDB/SQL/DuckDB) al modelo canónico |
 | `ptnt analizar-red` | Pipeline de red: topología → flujo (1φ o **3φ desbalanceado con neutro**) → pérdidas (Monte Carlo P10/P50/P90) → balance y PNT; opción `--trifasico` y `--opendss`; genera reporte ejecutivo HTML, `.dss` y reglas de calidad |
+| `ptnt diagnostico` | **Credibilidad**: transferencias no reportadas, clientes faltantes, alimentadores incoherentes y **validación contra la base de multados** (lift real del detector) |
 | `ptnt focalizar` | **Dónde ir a hacer el levantamiento**: rankings por alimentador/zona/ramal/transformador/sector/cliente + órdenes de trabajo, XLSX y reporte HTML |
 | `ptnt validar-flujo` | Valida el flujo contra casos analíticos y contra **OpenDSS** (si está instalado) |
 | `ptnt dashboard` | Tablero de análisis (Streamlit) |
@@ -121,7 +123,8 @@ src/ptnt/
 ├── lighting/     # alumbrado público (E7)
 ├── balance/      # balance jerárquico y PNT + controles C01-C06 (E9)
 ├── grid/         # cargabilidad, desbalance, riesgo multinivel, agregación LV al trafo (E10)
-├── survey/       # focalización: dónde inspeccionar + sectores + órdenes + reporte (§11.5)
+├── survey/       # focalización: niveles + rutas comerciales (CLIRLSCOD) + sectores + órdenes (§11.5)
+├── anomalies/    # transferencias no reportadas, clientes faltantes, incoherencias
 ├── quality/      # reconciliación (§6.1) + motor de reglas R05/R09/R11/R12/R15/R22/R24/P01/P09 (E5)
 ├── store/        # DuckDB (schema.sql) + persistencia
 ├── io/migration.py  # migración origen → modelo canónico (§4.3, round-trip)

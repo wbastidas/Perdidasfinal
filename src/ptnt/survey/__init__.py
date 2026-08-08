@@ -7,6 +7,12 @@ ramal, puesto de transformación y cliente— más los **sectores de sospecha**
 levantamiento priorizadas, exportable y visible en las interfaces.
 """
 
+from ptnt.survey.routes import (
+    RouteStats,
+    analyze_commercial_routes,
+    routes_to_dataframe,
+    routes_to_target_input,
+)
 from ptnt.survey.sectors import Sector, cluster_sectors
 from ptnt.survey.targeting import (
     SurveyPlan,
@@ -22,4 +28,8 @@ __all__ = [
     "TargetLevel",
     "cluster_sectors",
     "Sector",
+    "analyze_commercial_routes",
+    "RouteStats",
+    "routes_to_target_input",
+    "routes_to_dataframe",
 ]

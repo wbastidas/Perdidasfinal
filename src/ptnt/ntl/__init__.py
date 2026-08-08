@@ -12,6 +12,14 @@ from ptnt.ntl.network_signals import (
     n3_totalizer_balance,
     n4_loading_incoherence,
 )
+from ptnt.ntl.confirmed import (
+    ConfirmedTheftSet,
+    ValidationMetrics,
+    calibrate_signal_thresholds,
+    load_confirmed_theft,
+    pu_learning,
+    validate_against_confirmed,
+)
 from ptnt.ntl.scoring import NtlRanking, score_customers
 from ptnt.ntl.signals import (
     SignalResult,
@@ -27,4 +35,10 @@ __all__ = [
     "n1_zone_balance_residual",
     "n3_totalizer_balance",
     "n4_loading_incoherence",
+    "load_confirmed_theft",
+    "ConfirmedTheftSet",
+    "validate_against_confirmed",
+    "ValidationMetrics",
+    "pu_learning",
+    "calibrate_signal_thresholds",
 ]

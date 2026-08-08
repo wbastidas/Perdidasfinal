@@ -34,6 +34,7 @@ class TargetLevel(str, Enum):
     ZONA_PROTECCION = "ZONA_PROTECCION"
     RAMAL = "RAMAL"
     PUESTO_TRANSFORMACION = "PUESTO_TRANSFORMACION"
+    RUTA_COMERCIAL = "RUTA_COMERCIAL"   # CLIRLSCOD: ruta de lectura
     SECTOR = "SECTOR"
     CLIENTE = "CLIENTE"
 
@@ -74,6 +75,8 @@ class SurveyTarget:
             return "Inspección individual de acometida y medidor"
         if self.level == TargetLevel.PUESTO_TRANSFORMACION:
             return "Censo de carga del transformador y revisión de acometidas"
+        if self.level == TargetLevel.RUTA_COMERCIAL:
+            return "Relectura y verificación de toda la ruta comercial"
         if self.level == TargetLevel.SECTOR:
             return "Recorrido de sector (barrido casa por casa)"
         if self.level == TargetLevel.RAMAL:
@@ -138,7 +141,8 @@ class SurveyPlan:
         """
 
         niveles = niveles or [
-            TargetLevel.PUESTO_TRANSFORMACION, TargetLevel.SECTOR, TargetLevel.CLIENTE
+            TargetLevel.PUESTO_TRANSFORMACION, TargetLevel.RUTA_COMERCIAL,
+            TargetLevel.SECTOR, TargetLevel.CLIENTE
         ]
         elegibles = [
             t for t in self.targets if t.level in niveles and not t.data_problem_flag
@@ -229,6 +233,7 @@ def build_survey_plan(
     zone_signals: list[dict] | None = None,
     branch_stats: list[dict] | None = None,
     transformer_stats: list[dict] | None = None,
+    route_stats: list[dict] | None = None,
     customer_ranking: pd.DataFrame | None = None,
     customer_coords: pd.DataFrame | None = None,
     umbral_confiabilidad: float = 50.0,
@@ -407,6 +412,42 @@ def build_survey_plan(
                     "suspect_customers": int(sosp_cli[i]),
                 },
                 centroid_x=r.get("x"), centroid_y=r.get("y"),
+            ))
+
+    # --- Nivel RUTA COMERCIAL (CLIRLSCOD) -----------------------------------
+    if route_stats:
+        df = pd.DataFrame(route_stats)
+        n = len(df)
+        sosp_cli = df.get("suspect_customers", pd.Series(np.zeros(n))).to_numpy(dtype=float)
+        cli = np.maximum(df.get("customers", pd.Series(np.ones(n))).to_numpy(dtype=float), 1)
+        incoh = df.get("incoherencia", pd.Series(np.zeros(n))).to_numpy(dtype=float)
+        densidad = np.clip(sosp_cli / cli, 0, 1)
+        # Una ruta se selecciona por sospecha O por incoherencia: la ruta con
+        # lecturas en cero o estimadas masivas es un problema de gestión que hay
+        # que levantar igual, aunque no dispare señales de hurto por cliente.
+        susp = np.clip(np.maximum(0.5 * densidad + 0.5 * _norm(sosp_cli), incoh), 0, 1)
+        recup = df.get("recoverable_kwh", pd.Series(np.zeros(n))).to_numpy(dtype=float)
+        prio = _priority(susp, recup, np.full(n, 100.0))
+        for i, r in df.iterrows():
+            motivos = r.get("motivos")
+            motivos = list(motivos) if isinstance(motivos, (list, tuple)) else []
+            if not motivos:
+                motivos = ["Ruta priorizada por concentración de señales"]
+            targets.append(SurveyTarget(
+                level=TargetLevel.RUTA_COMERCIAL,
+                entity_id=str(r.get("route_id", f"RT{i}")),
+                feeder_code=str(r.get("feeder_code", "")) or None,
+                priority_score=float(prio[i]), suspicion=float(susp[i]),
+                recoverable_kwh_month=float(recup[i]),
+                customers_count=int(cli[i]),
+                reasons=motivos[:3],
+                evidence={
+                    "densidad_sospecha": float(densidad[i]),
+                    "incoherencia": float(incoh[i]),
+                    "pct_ceros": float(r.get("pct_ceros", 0) or 0),
+                    "pct_estimadas": float(r.get("pct_estimadas", 0) or 0),
+                    "clientes_sin_sig": int(r.get("n_sin_sig", 0) or 0),
+                },
             ))
 
     # --- Nivel CLIENTE y SECTOR ---------------------------------------------
