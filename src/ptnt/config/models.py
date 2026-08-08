@@ -289,6 +289,99 @@ class RutasConfig(_Strict):
 
 
 # ---------------------------------------------------------------------------
+# Catálogos (conductores y transformadores)
+# ---------------------------------------------------------------------------
+class CatalogosConfig(_Strict):
+    conductores: str = "config/catalogo_conductores.yaml"
+    transformadores: str = "config/catalogo_transformadores.yaml"
+
+
+# ---------------------------------------------------------------------------
+# Pérdidas técnicas (§8)
+# ---------------------------------------------------------------------------
+class PerdidasConfig(_Strict):
+    # Factor de pérdidas F_p = k·Fc + (1-k)·Fc²
+    k_por_tipo_alimentador: dict[str, float] = Field(
+        default_factory=lambda: {"U": 0.30, "R": 0.20}
+    )
+    k_por_defecto: float = Field(0.25, ge=0, le=1)
+    # Conductores
+    temperatura_operacion_c: float = 50.0
+    temperatura_referencia_c: float = 20.0
+    alpha_aluminio: float = 0.00403
+    alpha_cobre: float = 0.00393
+    incluir_neutro: bool = True
+    # Transformadores
+    factor_desbalance_cobre: float = 1.02
+    # ¡DEBE ser false! La pérdida en vacío no se afecta por el factor de pérdidas.
+    aplicar_factor_perdidas_a_vacio: bool = False
+    # Medidores: vatios por tipo
+    watts_medidor: dict[str, float] = Field(
+        default_factory=lambda: {
+            "Electromecánico": 1.8,
+            "Electrónico": 0.8,
+            "Inteligente": 1.0,
+            "_default": 1.0,
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# Alumbrado público (§9)
+# ---------------------------------------------------------------------------
+class AlumbradoConfig(_Strict):
+    dias_mes_por_defecto: int = 30
+    horas_min: float = 10.0
+    horas_max: float = 13.0
+    perdidas_auxiliares_w: dict[str, float] = Field(
+        default_factory=lambda: {
+            "LED": 4, "Sodio": 25, "Mercurio": 30,
+            "Metal Halide": 28, "Inducción": 8, "_default": 20,
+        }
+    )
+    # DEBE ser true — evita doble conteo de luminarias bajo medición
+    excluir_si_bajo_medicion: bool = True
+    sensibilidad_horas_pct: float = 20.0
+
+
+# ---------------------------------------------------------------------------
+# Balance energético (§10)
+# ---------------------------------------------------------------------------
+class ControlesBalance(_Strict):
+    c02_pnt_maxima_pct: float = 60.0
+    c04_perdidas_tecnicas_max_pct: float = 20.0
+    c05_cobertura_clientes_pct: float = 10.0
+    c06_cobertura_energia_min_pct: float = 70.0
+
+
+class BalanceConfig(_Strict):
+    tolerancia_cierre_pct: float = 0.5
+    consumos_propios_pct_defecto: float = 0.1
+    ens_por_defecto_kwh: float = 0.0
+    controles: ControlesBalance = Field(default_factory=ControlesBalance)
+
+
+# ---------------------------------------------------------------------------
+# Cargabilidad (§11.7)
+# ---------------------------------------------------------------------------
+class CargabilidadConfig(_Strict):
+    sobrecargado_critico: float = 1.20
+    sobrecargado: float = 1.00
+    alta_carga: float = 0.80
+    adecuado_min: float = 0.30
+    subutilizado_min: float = 0.15
+    desbalance_umbral_pct: float = 10.0
+
+
+# ---------------------------------------------------------------------------
+# Flujo de potencia (§8.7)
+# ---------------------------------------------------------------------------
+class FlujoConfig(_Strict):
+    tolerancia_convergencia: float = 1.0e-6
+    max_iteraciones: int = Field(100, ge=1)
+
+
+# ---------------------------------------------------------------------------
 # Raíz
 # ---------------------------------------------------------------------------
 class AppConfig(_Strict):
@@ -301,6 +394,12 @@ class AppConfig(_Strict):
     promedio: AveragingConfig = Field(default_factory=AveragingConfig)
     carga: LoadConfig
     senales: SignalsConfig = Field(default_factory=SignalsConfig)
+    catalogos: CatalogosConfig = Field(default_factory=CatalogosConfig)
+    perdidas: PerdidasConfig = Field(default_factory=PerdidasConfig)
+    alumbrado: AlumbradoConfig = Field(default_factory=AlumbradoConfig)
+    balance: BalanceConfig = Field(default_factory=BalanceConfig)
+    cargabilidad: CargabilidadConfig = Field(default_factory=CargabilidadConfig)
+    flujo: FlujoConfig = Field(default_factory=FlujoConfig)
     seguridad: SecurityConfig = Field(default_factory=SecurityConfig)
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
     visor: WebviewerConfig = Field(default_factory=WebviewerConfig)

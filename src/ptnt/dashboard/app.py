@@ -110,8 +110,9 @@ def main() -> None:
         f"Método de demanda: **{met.get('metodo_demanda','-')}**"
     )
 
-    tab1, tab2, tab3 = st.tabs(
-        ["🎯 Sospecha de hurto", "🔌 Reconciliación de potencia", "📈 Cliente"]
+    tab1, tab2, tab3, tab4 = st.tabs(
+        ["🎯 Sospecha de hurto", "🔌 Reconciliación de potencia",
+         "📈 Cliente", "⚖️ Balance de red"]
     )
 
     # -- V7: sectores de sospecha -------------------------------------------
@@ -168,6 +169,35 @@ def main() -> None:
         st.write("**Razones:**")
         for r in (fila["razones"] if isinstance(fila["razones"], (list, tuple)) else []):
             st.write(f"- {r}")
+
+    # -- V4/V5: balance energético y pérdidas técnicas (pipeline de red) -----
+    with tab4:
+        st.subheader("Balance energético y pérdidas técnicas (pipeline de red)")
+        bpath = Path(cfg.rutas.salidas) / "balance_red.json"
+        if not bpath.exists():
+            st.info("Sin balance de red. Ejecute: `ptnt analizar-red`.")
+        else:
+            bal = json.loads(bpath.read_text(encoding="utf-8"))
+            tipo = bal.get("balance_type", "-")
+            if tipo == "INDICATIVO":
+                st.warning("Balance **INDICATIVO** (sin medición de cabecera): "
+                           "la PNT no es verificable.")
+            else:
+                st.success("Balance **MEDIDO** (con medición de cabecera).")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Entrada (cabecera)", f"{bal.get('e_input_kwh',0):,.0f} kWh")
+            c2.metric("Facturado", f"{bal.get('e_billed_kwh',0):,.0f} kWh")
+            c3.metric("Pérdidas técnicas", f"{bal.get('loss_technical_kwh',0):,.0f} kWh")
+            c4.metric("PNT", f"{bal.get('ntl_kwh',0):,.0f} kWh ({bal.get('ntl_pct',0):.1f}%)")
+            comp = bal.get("loss_components", {})
+            if comp:
+                st.write("**Pérdidas técnicas por componente (kWh):**")
+                st.bar_chart(pd.Series(comp))
+            trig = bal.get("controls_triggered", [])
+            if trig:
+                st.error(f"Controles de coherencia disparados: {', '.join(trig)}")
+            else:
+                st.caption("Controles de coherencia C01–C06: todos OK")
 
 
 if __name__ == "__main__":  # pragma: no cover

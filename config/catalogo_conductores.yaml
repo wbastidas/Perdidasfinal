@@ -1,0 +1,67 @@
+# =============================================================================
+# Catálogo de conductores — impedancias y ampacidades por código.
+# El FGDB entrega el NOMBRE del conductor (dominio 'Catalogo Conductores'); la
+# impedancia, ampacidad y sección vienen de aquí, indexadas por el código.
+# Todo código presente en la red y ausente de este catálogo es un error
+# bloqueante de configuración (regla R05), no un warning.
+#
+# r_ohm_km / x_ohm_km a 20 °C. La corrección por temperatura se aplica en
+# ptnt.losses.factors con alpha del material.
+# =============================================================================
+conductores:
+  COO0184:
+    nombre: "Des.Cu.1/0"
+    material: "CU"
+    seccion_mm2: 53.5
+    r_ohm_km_20c: 0.345
+    x_ohm_km: 0.30
+    ampacidad_a: 230
+    voltaje_clase: "BT"
+  COO0002:
+    nombre: "ACSR 2/0"
+    material: "ACSR"
+    seccion_mm2: 67.4
+    r_ohm_km_20c: 0.276
+    x_ohm_km: 0.36
+    ampacidad_a: 270
+    voltaje_clase: "MT"
+  COO0004:
+    nombre: "ACSR 4/0"
+    material: "ACSR"
+    seccion_mm2: 107.2
+    r_ohm_km_20c: 0.174
+    x_ohm_km: 0.34
+    ampacidad_a: 340
+    voltaje_clase: "MT"
+  COO0100:
+    nombre: "AAAC 3/0"
+    material: "AL"
+    seccion_mm2: 85.0
+    r_ohm_km_20c: 0.220
+    x_ohm_km: 0.33
+    ampacidad_a: 300
+    voltaje_clase: "MT"
+  COO0250:
+    nombre: "AAAC 250 kcmil"
+    material: "AL"
+    seccion_mm2: 126.7
+    r_ohm_km_20c: 0.147
+    x_ohm_km: 0.32
+    ampacidad_a: 405
+    voltaje_clase: "MT"
+  COO0050:
+    nombre: "Al #2 BT"
+    material: "AL"
+    seccion_mm2: 33.6
+    r_ohm_km_20c: 0.856
+    x_ohm_km: 0.10
+    ampacidad_a: 130
+    voltaje_clase: "BT"
+  COO0300:
+    nombre: "Neutro Al #2"
+    material: "AL"
+    seccion_mm2: 33.6
+    r_ohm_km_20c: 0.856
+    x_ohm_km: 0.10
+    ampacidad_a: 130
+    voltaje_clase: "BT"

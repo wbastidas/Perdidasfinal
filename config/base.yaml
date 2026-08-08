@@ -166,6 +166,82 @@ senales:
   campo_grupo_par: "grupo_lectura"      # CLIRLSCOD
 
 # -----------------------------------------------------------------------------
+# Catálogos de red
+# -----------------------------------------------------------------------------
+catalogos:
+  conductores: "config/catalogo_conductores.yaml"
+  transformadores: "config/catalogo_transformadores.yaml"
+
+# -----------------------------------------------------------------------------
+# Pérdidas técnicas (§8)
+# -----------------------------------------------------------------------------
+perdidas:
+  k_por_tipo_alimentador:
+    "U": 0.30      # Urbano
+    "R": 0.20      # Rural
+  k_por_defecto: 0.25
+  temperatura_operacion_c: 50.0
+  temperatura_referencia_c: 20.0
+  alpha_aluminio: 0.00403
+  alpha_cobre: 0.00393
+  incluir_neutro: true
+  factor_desbalance_cobre: 1.02
+  aplicar_factor_perdidas_a_vacio: false   # DEBE ser false (§8.3.1)
+  watts_medidor:
+    "Electromecánico": 1.8
+    "Electrónico": 0.8
+    "Inteligente": 1.0
+    "_default": 1.0
+
+# -----------------------------------------------------------------------------
+# Alumbrado público (§9)
+# -----------------------------------------------------------------------------
+alumbrado:
+  dias_mes_por_defecto: 30
+  horas_min: 10.0
+  horas_max: 13.0
+  perdidas_auxiliares_w:
+    "LED": 4
+    "Sodio": 25
+    "Mercurio": 30
+    "Metal Halide": 28
+    "Inducción": 8
+    "_default": 20
+  excluir_si_bajo_medicion: true           # DEBE ser true (evita doble conteo)
+  sensibilidad_horas_pct: 20.0
+
+# -----------------------------------------------------------------------------
+# Balance energético (§10)
+# -----------------------------------------------------------------------------
+balance:
+  tolerancia_cierre_pct: 0.5
+  consumos_propios_pct_defecto: 0.1
+  ens_por_defecto_kwh: 0.0
+  controles:
+    c02_pnt_maxima_pct: 60.0
+    c04_perdidas_tecnicas_max_pct: 20.0
+    c05_cobertura_clientes_pct: 10.0
+    c06_cobertura_energia_min_pct: 70.0
+
+# -----------------------------------------------------------------------------
+# Cargabilidad de transformadores (§11.7)
+# -----------------------------------------------------------------------------
+cargabilidad:
+  sobrecargado_critico: 1.20
+  sobrecargado: 1.00
+  alta_carga: 0.80
+  adecuado_min: 0.30
+  subutilizado_min: 0.15
+  desbalance_umbral_pct: 10.0
+
+# -----------------------------------------------------------------------------
+# Flujo de potencia (§8.7)
+# -----------------------------------------------------------------------------
+flujo:
+  tolerancia_convergencia: 1.0e-6
+  max_iteraciones: 100
+
+# -----------------------------------------------------------------------------
 # Seguridad
 # -----------------------------------------------------------------------------
 seguridad:

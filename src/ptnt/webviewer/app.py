@@ -52,6 +52,11 @@ def _load_metricas(cfg: AppConfig) -> dict:
     return json.loads(mj.read_text(encoding="utf-8")) if mj.exists() else {}
 
 
+def _load_balance(cfg: AppConfig) -> dict:
+    bj = Path(cfg.rutas.salidas) / "balance_red.json"
+    return json.loads(bj.read_text(encoding="utf-8")) if bj.exists() else {}
+
+
 def create_app(config_path: str = "config/base.yaml") -> FastAPI:
     cfg = load_config(config_path)
     app = FastAPI(title=cfg.visor.titulo, docs_url=None, redoc_url=None)
@@ -92,6 +97,13 @@ def create_app(config_path: str = "config/base.yaml") -> FastAPI:
     def api_metricas(_user: str = Depends(_auth)) -> JSONResponse:
         return JSONResponse(_load_metricas(cfg))
 
+    @app.get("/api/balance")
+    def api_balance(_user: str = Depends(_auth)) -> JSONResponse:
+        bal = _load_balance(cfg)
+        if not bal:
+            return JSONResponse({"error": "sin balance de red calculado"}, status_code=404)
+        return JSONResponse(bal)
+
     @app.get("/api/ranking")
     def api_ranking(_user: str = Depends(_auth), top: int = 100) -> JSONResponse:
         df = _load_ranking(cfg)
@@ -107,12 +119,33 @@ def create_app(config_path: str = "config/base.yaml") -> FastAPI:
     def index(user: str = Depends(_auth)) -> str:
         df = _load_ranking(cfg)
         met = _load_metricas(cfg)
-        return _render_html(cfg, df, met, user)
+        bal = _load_balance(cfg)
+        return _render_html(cfg, df, met, user, bal)
 
     return app
 
 
-def _render_html(cfg: AppConfig, df: pd.DataFrame, met: dict, user: str) -> str:
+def _balance_html(bal: dict) -> str:
+    if not bal:
+        return ""
+    tipo = bal.get("balance_type", "-")
+    aviso = (
+        '<p class="note" style="color:#fbbf24">Balance INDICATIVO: sin medición de '
+        'cabecera, la PNT no es verificable.</p>'
+        if tipo == "INDICATIVO" else ""
+    )
+    return f"""
+ <h2 style="font-size:1rem;margin-top:28px">Balance energético de red ({_esc(tipo)})</h2>
+ {aviso}
+ <div class="cards">
+  <div class="card"><div class="v">{bal.get('e_input_kwh',0):,.0f}</div><div class="l">Entrada kWh</div></div>
+  <div class="card"><div class="v">{bal.get('e_billed_kwh',0):,.0f}</div><div class="l">Facturado kWh</div></div>
+  <div class="card"><div class="v">{bal.get('loss_technical_kwh',0):,.0f}</div><div class="l">Pérdidas técnicas kWh</div></div>
+  <div class="card"><div class="v">{bal.get('ntl_kwh',0):,.0f}</div><div class="l">PNT kWh ({bal.get('ntl_pct',0):.1f}%)</div></div>
+ </div>"""
+
+
+def _render_html(cfg: AppConfig, df: pd.DataFrame, met: dict, user: str, bal: dict | None = None) -> str:
     if df.empty:
         cuerpo = "<p>No hay resultados calculados todavía.</p>"
     else:
@@ -161,6 +194,7 @@ def _render_html(cfg: AppConfig, df: pd.DataFrame, met: dict, user: str) -> str:
  </div>
  <h2 style="font-size:1rem">Top 100 clientes por sospecha de hurto</h2>
  {cuerpo}
+ {_balance_html(bal or {})}
  <p class="note">Vista de solo lectura · usuario: {_esc(user)} · método de promedio:
    {_esc(str(met.get('metodo_promedio','-')))} · Datos ya calculados; esta interfaz no ejecuta análisis.</p>
 </main></body></html>"""

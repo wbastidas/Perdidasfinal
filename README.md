@@ -60,7 +60,8 @@ ptnt servir-visor       # visor de solo lectura  -> http://127.0.0.1:8080
 | `ptnt verificar-config` | Valida el YAML; falla nombrando el parámetro obligatorio ausente |
 | `ptnt probar-fuentes` | Prueba la conectividad de todas las bases de origen |
 | `ptnt generar-sinteticos` | Genera un CSV comercial sintético con hurtos conocidos |
-| `ptnt analizar` | Pipeline: promedio → potencia → reconciliación → hurto |
+| `ptnt analizar` | Pipeline comercial: promedio → potencia → reconciliación → hurto |
+| `ptnt analizar-red` | Pipeline de red: topología → flujo → pérdidas técnicas → balance y PNT |
 | `ptnt dashboard` | Tablero de análisis (Streamlit) |
 | `ptnt servir-visor` | Visor web de solo lectura (FastAPI) |
 | `ptnt crear-usuario` | Alta de usuario para las interfaces (solo hash) |
@@ -99,12 +100,20 @@ src/ptnt/
 ├── ntl/
 │   ├── signals.py             # señales S1–S10 de hurto
 │   └── scoring.py             # consenso + ranking
+├── ref/          # catálogos: conductores, transformadores
+├── topology/     # grafo radial + trazas + zonas (E4)
+├── powerflow/    # flujo de potencia backward-forward sweep (E8.1)
+├── losses/       # pérdidas técnicas: factor, conductores, trafos, medidores (E8)
+├── lighting/     # alumbrado público (E7)
+├── balance/      # balance jerárquico y PNT + controles C01-C06 (E9)
+├── grid/         # cargabilidad, desbalance de fases, riesgo multinivel (E10)
 ├── store/        # DuckDB (schema.sql) + persistencia
 ├── security/     # auth (hash), secretos por entorno
-├── synth/        # generador de datos con hurtos inyectados
+├── synth/        # generador de datos (comercial + red radial) con hurtos
 ├── dashboard/    # tablero Streamlit (escritorio)
 ├── webviewer/    # visor FastAPI (solo lectura)
-├── pipeline.py   # orquestador
+├── pipeline.py       # orquestador comercial
+├── grid_pipeline.py  # orquestador de red (E4-E10)
 └── cli.py        # CLI typer
 ```
 
@@ -119,10 +128,21 @@ pytest --cov=ptnt       # cobertura
 
 ## Alcance de esta entrega
 
-Esta versión implementa el **flujo de valor inmediato** de la especificación
-PTNT-BAL v1.0: ingesta comercial multi-origen, promedio multi-mes, recálculo de
-potencia con informe de reconciliación, y detección de hurto con las interfaces
-web. Las etapas de red eléctrica de la especificación (topología en grafo, flujo
-de potencia, pérdidas técnicas por componente, balance jerárquico con cabecera)
-están descritas en [`docs/ARQUITECTURA.md`](docs/ARQUITECTURA.md) como hoja de
-ruta y el esquema de base de datos (`src/ptnt/store/schema.sql`) ya las soporta.
+Esta versión implementa:
+
+**Vía comercial** (análisis de consumo y hurto): ingesta multi-origen, promedio
+multi-mes, recálculo de potencia con informe de reconciliación, y detección de
+hurto (`ptnt analizar`).
+
+**Vía de red eléctrica** (etapas E4–E10, ver [`docs/RED_ELECTRICA.md`](docs/RED_ELECTRICA.md)):
+reconstrucción de topología en grafo radial y trazas, flujo de potencia
+(backward-forward sweep), pérdidas técnicas por componente (conductores con
+corrección de temperatura, transformadores con vacío + carga y capacidad de banco
+por configuración, medidores), alumbrado público con exclusión por medición,
+balance jerárquico MEDIDO/INDICATIVO con controles C01–C06, cargabilidad y
+desbalance de fases (`ptnt analizar-red`).
+
+Quedan como evolución del motor: flujo trifásico desbalanceado con neutro
+explícito, validación IEEE 13/34/123, Monte Carlo P10/P50/P90 y exportador
+OpenDSS. El esquema de base de datos (`src/ptnt/store/schema.sql`) ya soporta
+estos resultados.

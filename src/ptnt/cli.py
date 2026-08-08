@@ -150,6 +150,87 @@ def analizar(
 
 
 @app.command()
+def analizar_red(
+    n_trafos: int = typer.Option(8, "--trafos", help="Nº de transformadores (red sintética)"),
+    clientes_por_trafo: int = typer.Option(20, "--clientes-trafo"),
+    pnt: float = typer.Option(0.08, "--pnt", help="Fracción de PNT inyectada"),
+    config: str = _CONFIG_OPT,
+):
+    """Ejecuta el pipeline de RED (E4–E10) sobre una red radial sintética:
+    topología → flujo de potencia → pérdidas técnicas → balance y PNT."""
+
+    from ptnt.grid_pipeline import run_grid_analysis
+    from ptnt.synth.network import generate_radial_network
+
+    cfg = _cargar(config)
+    net = generate_radial_network(
+        n_transformers=n_trafos, customers_per_tx=clientes_por_trafo, ntl_fraction=pnt
+    )
+    res = run_grid_analysis(net.model, cfg, head_energy_kwh=net.head_energy_kwh)
+    b = res.balance
+
+    console.print(f"\n[bold]Alimentador {res.feeder_code}[/] — balance {b.balance_type.value}")
+    console.print(f"  Flujo de potencia: converge={res.powerflow_converged} "
+                  f"(iter {res.metrics['pf_iterations']}, Vmin={res.v_min_pu:.4f} pu)")
+    console.print(f"  Entrada (cabecera): {b.e_input_kwh:,.0f} kWh")
+    console.print(f"  Facturado:          {b.e_billed_kwh:,.0f} kWh")
+    console.print(f"  Alumbrado público:  {b.e_streetlight_unmetered_kwh:,.0f} kWh")
+    console.print(f"  Pérdidas técnicas:  {b.loss_technical_kwh:,.0f} kWh")
+    console.print(f"  [bold]PNT:               {b.ntl_kwh:,.0f} kWh ({b.ntl_pct:.1f}%)[/]")
+
+    tabla = Table(title="Pérdidas técnicas por componente")
+    tabla.add_column("Componente")
+    tabla.add_column("kWh", justify="right")
+    for comp, val in res.loss_components_kwh.items():
+        tabla.add_row(comp, f"{val:,.1f}")
+    console.print(tabla)
+
+    disparados = [c for c in b.controls if c.triggered]
+    if disparados:
+        console.print("[yellow]Controles de coherencia disparados:[/]")
+        for c in disparados:
+            console.print(f"  [yellow]{c.code}[/]: {c.detail}")
+    else:
+        console.print("[green]Controles de coherencia C01–C06: todos OK[/]")
+
+    # Resumen de cargabilidad
+    tl = res.transformer_loading
+    if not tl.empty:
+        conteo = tl["loading_class"].value_counts().to_dict()
+        console.print(f"\nCargabilidad de {len(tl)} puestos: {conteo}")
+
+    # Persistir para las interfaces web
+    import json as _json
+    from pathlib import Path as _Path
+
+    salidas = _Path(cfg.rutas.salidas)
+    salidas.mkdir(parents=True, exist_ok=True)
+    balance_dict = {
+        "feeder_code": b.feeder_code,
+        "balance_type": b.balance_type.value,
+        "e_input_kwh": b.e_input_kwh,
+        "e_billed_kwh": b.e_billed_kwh,
+        "e_streetlight_unmetered_kwh": b.e_streetlight_unmetered_kwh,
+        "loss_total_kwh": b.loss_total_kwh,
+        "loss_technical_kwh": b.loss_technical_kwh,
+        "ntl_kwh": b.ntl_kwh,
+        "ntl_pct": b.ntl_pct,
+        "loss_components": res.loss_components_kwh,
+        "controls_triggered": [c.code for c in b.controls if c.triggered],
+        "metrics": res.metrics,
+    }
+    (salidas / "balance_red.json").write_text(
+        _json.dumps(balance_dict, ensure_ascii=False, indent=2, default=str),
+        encoding="utf-8",
+    )
+    try:
+        tl.to_parquet(salidas / "cargabilidad.parquet", index=False)
+    except Exception:  # pragma: no cover - pyarrow opcional
+        tl.to_csv(salidas / "cargabilidad.csv", index=False)
+    console.print(f"[green]✓[/] Resultados de red en {salidas}/balance_red.json")
+
+
+@app.command()
 def dashboard(config: str = _CONFIG_OPT):
     """Lanza el tablero de análisis para escritorio (Streamlit)."""
 

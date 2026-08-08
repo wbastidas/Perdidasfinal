@@ -150,15 +150,23 @@ estimada y las tres razones principales en lenguaje operativo.
 Ambas leen **solo de las salidas ya calculadas** (DuckDB/Parquet); no ejecutan el
 pipeline pesado. La seguridad se detalla en [SEGURIDAD.md](SEGURIDAD.md).
 
-## 8. Hoja de ruta (etapas de red de la especificación)
+## 8. Etapas de red eléctrica (E4–E10)
 
-Estas etapas están especificadas y el esquema las soporta; quedan para las
-siguientes iteraciones sobre esta base:
+Implementadas en esta entrega (detalle en [RED_ELECTRICA.md](RED_ELECTRICA.md)):
 
-- **Topología y trazas** (`rustworkx`): grafo por alimentador, asignación de
-  clientes a transformadores por traza vs. declarado.
-- **Flujo de potencia** (barrido atrás/adelante + OpenDSS) y validación IEEE
-  13/34/123.
-- **Pérdidas técnicas por componente** (MT, transformadores vacío/carga, BT,
-  neutro, acometidas, medidores, AP) con Monte Carlo P10/P50/P90.
-- **Balance jerárquico** con energía de cabecera y separación MEDIDO/INDICATIVO.
+- **Topología y trazas** (`topology/`): grafo radial por alimentador, trazas
+  aguas arriba/abajo, asignación de clientes a transformadores **por traza** vs.
+  declarado, zonas de protección, detección de ciclos e islas.
+- **Flujo de potencia** (`powerflow/`): barrido hacia atrás/adelante, corrientes
+  por tramo, tensiones nodales.
+- **Pérdidas técnicas por componente** (`losses/`): conductores I²R con corrección
+  de temperatura, transformadores (vacío + carga, **P0 no afectado por F_p**),
+  capacidad de banco por configuración, medidores.
+- **Alumbrado público** (`lighting/`): con exclusión por `BAJOMEDICION`.
+- **Balance jerárquico** (`balance/`): ecuación §10.1, separación
+  MEDIDO/INDICATIVO, controles C01–C06.
+- **Cargabilidad, desbalance y riesgo multinivel** (`grid/`).
+
+Evolución del motor (el esquema de BD ya la soporta): flujo trifásico
+desbalanceado con neutro explícito, validación IEEE 13/34/123, Monte Carlo
+P10/P50/P90 y exportador OpenDSS.
