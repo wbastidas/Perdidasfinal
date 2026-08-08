@@ -30,6 +30,8 @@ from ptnt.load.demand import recompute_customer_power
 from ptnt.ntl.scoring import score_customers
 from ptnt.ntl.signals import compute_signals
 from ptnt.quality.reconciliation import reconcile_power
+from ptnt.segment.classification import segmentar_clientes
+from ptnt.segment.peers import asignar_grupo_par
 
 
 @dataclass
@@ -44,6 +46,10 @@ class PipelineResult:
     ranking: pd.DataFrame
     metricas: dict = field(default_factory=dict)
     advertencias: list[str] = field(default_factory=list)
+    # Resúmenes de segmentación (vacíos si `segmentacion.habilitada` es false)
+    segmentos_por_clase: pd.DataFrame = field(default_factory=pd.DataFrame)
+    segmentos_por_segmento: pd.DataFrame = field(default_factory=pd.DataFrame)
+    grupos_par_por_nivel: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 def _clientes_extendidos(clientes: pd.DataFrame, raw_wide: pd.DataFrame | None,
@@ -100,6 +106,34 @@ def run_analysis(
     )
     clientes = _clientes_extendidos(parsed.clientes, raw_wide, cfg)
 
+    # --- Segmentación: clase × tensión × estrato, y grupo par jerárquico ------
+    # Debe ir ANTES de las señales: S5 compara contra el grupo par segmentado y el
+    # recuperable se estima dentro del segmento, no contra una mediana global.
+    segmentacion = None
+    grupos_par = None
+    if cfg.segmentacion.habilitada:
+        logger.info("Segmentando el padrón por clase, tensión y estrato de consumo")
+        segmentacion = segmentar_clientes(
+            clientes, parsed.consumo,
+            col_tarifa=cfg.segmentacion.columna_tarifa,
+            percentil_base=cfg.segmentacion.percentil_consumo_base,
+            cortes_residencial=cfg.segmentacion.cortes_residencial_kwh,
+            cortes_no_residencial=cfg.segmentacion.cortes_no_residencial_kwh,
+            umbral_gran_cliente_kwh=cfg.segmentacion.umbral_gran_cliente_kwh_mes,
+        )
+        grupos_par = asignar_grupo_par(
+            segmentacion.clientes, min_pares=cfg.segmentacion.min_pares
+        )
+        clientes = grupos_par.clientes
+        advertencias.extend(segmentacion.advertencias)
+        advertencias.extend(grupos_par.advertencias)
+        logger.info(
+            "Segmentación: {} clases, {:.1f}% del padrón clasificado, "
+            "{:.1f}% de la energía es no residencial",
+            len(segmentacion.por_clase), segmentacion.cobertura_pct,
+            segmentacion.pct_energia_no_residencial,
+        )
+
     # Clientes suspendidos (para excluir ceros del promedio)
     suspendidos = set(
         clientes.loc[~clientes["service_active"], "contract_account"]
@@ -128,6 +162,7 @@ def run_analysis(
         columnas_senal=señales.columnas_senal,
         consumo_medio=consumo_medio,
         evidencia=señales.evidencia,
+        clientes=clientes,
     )
 
     metricas = {
@@ -139,8 +174,16 @@ def run_analysis(
         "delta_p_total_kw": recon.resumen.get("delta_p_total_kw"),
         "delta_p_total_pct": recon.resumen.get("delta_p_total_pct"),
         "n_sospechosos": ranking.n_sospechosos,
+        "metodo_recuperable": ranking.metodo_recuperable,
         "config_hash": config_hash(cfg),
     }
+    if segmentacion is not None:
+        metricas.update({
+            "segmentacion_cobertura_pct": round(segmentacion.cobertura_pct, 2),
+            "segmentacion_no_clasificados": segmentacion.n_no_clasificados,
+            "pct_energia_no_residencial": segmentacion.pct_energia_no_residencial,
+            "clientes_sin_grupo_par": grupos_par.n_sin_grupo if grupos_par else 0,
+        })
 
     result = PipelineResult(
         consumo=parsed.consumo,
@@ -153,6 +196,12 @@ def run_analysis(
         ranking=ranking.ranking,
         metricas=metricas,
         advertencias=advertencias,
+        segmentos_por_clase=(
+            segmentacion.por_clase if segmentacion is not None else pd.DataFrame()),
+        segmentos_por_segmento=(
+            segmentacion.por_segmento if segmentacion is not None else pd.DataFrame()),
+        grupos_par_por_nivel=(
+            grupos_par.resumen_niveles if grupos_par is not None else pd.DataFrame()),
     )
 
     if persistir:

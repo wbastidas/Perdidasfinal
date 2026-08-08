@@ -87,10 +87,45 @@ def main() -> int:
     print(f"  Δ Potencia SIG→corregido: {m['delta_p_total_kw']:,.0f} kW "
           f"({m['delta_p_total_pct']:.1f} %)")
     print(f"  Clientes sospechosos    : {m['n_sospechosos']:,}")
+
+    sub("Segmentación del padrón: dónde está la energía")
+    print(f"  Clasificado por tarifa  : {m.get('segmentacion_cobertura_pct')}%  "
+          f"(sin clase: {m.get('segmentacion_no_clasificados')})")
+    print(com.segmentos_por_clase.to_string(index=False))
+    print(f"\n  Los no residenciales concentran el "
+          f"{m.get('pct_energia_no_residencial')}% de la energía.")
+
+    sub("Grupo par: contra quién se compara cada cliente")
+    print(com.grupos_par_por_nivel.to_string(index=False))
+    print("  El grupo par se arma con claves EXÓGENAS al consumo (clase, tensión,")
+    print("  fases, ruta). Estratificar por consumo sería circular: un cliente que")
+    print("  hurta todo el período caería en un estrato bajo y quedaría comparado")
+    print("  contra clientes genuinamente pequeños, donde ya no destaca.")
+
+    from ptnt.segment.report import (
+        grandes_clientes_a_revisar,
+        rendimiento_por_segmento,
+    )
+
+    rend = rendimiento_por_segmento(com.ranking)
+    sub("Rendimiento esperado por visita (top 5 % de cada clase)")
+    print(rend.tabla.to_string(index=False))
+    for r in rend.recomendaciones:
+        print(f"  → {r}")
+
+    gc = grandes_clientes_a_revisar(com.ranking, top=5)
+    if not gc.empty:
+        sub("Grandes clientes con indicios (revisión individual)")
+        print(gc[["contract_account", "clase_consumo", "score",
+                  "recuperable_kwh_mes"]].to_string(index=False))
+        print("  Su posición relativa en el ranking los esconde: un desvío del 10 %")
+        print("  en uno de ellos equivale a cientos de residenciales completos.")
+
     sub("Top 5 del ranking de sospecha")
-    top = com.ranking.head(5)[["rank", "contract_account", "score",
-                               "n_senales_activas", "recuperable_kwh_mes"]]
-    print(top.to_string(index=False))
+    cols = ["rank", "contract_account", "clase_consumo", "score",
+            "n_senales_activas", "recuperable_kwh_mes"]
+    print(com.ranking.head(5)[[c for c in cols if c in com.ranking.columns]]
+          .to_string(index=False))
 
     # ------------------------------------------------------------------ 4
     titulo(4, "ANÁLISIS DE RED (topología → flujo → pérdidas → balance → PNT)")

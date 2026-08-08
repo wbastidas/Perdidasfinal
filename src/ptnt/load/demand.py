@@ -22,11 +22,13 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from enum import Enum
+from functools import lru_cache
 
 import numpy as np
 import pandas as pd
 
 from ptnt.config.models import ClaseTarifaria, LoadConfig, MetodoDemanda
+from ptnt.segment.classification import resolver_clave_config
 
 
 class PhaseConfig(str, Enum):
@@ -193,7 +195,7 @@ def recompute_customer_power(
     cos_arr = np.empty(len(df))
     default = _clase_default(cfg)
     for i, t in enumerate(tarifas):
-        clase = cfg.clases.get(t, default)
+        clase = _resolver_clase(t, cfg, default)
         a_arr[i] = clase.a
         b_arr[i] = clase.b
         lf_arr[i] = clase.factor_carga
@@ -231,3 +233,30 @@ def _clase_default(cfg: LoadConfig) -> ClaseTarifaria:
     """Clase de respaldo cuando la tarifa no está catalogada (la primera definida)."""
 
     return next(iter(cfg.clases.values()))
+
+
+@lru_cache(maxsize=4096)
+def _clave_resuelta(tarifa: str, claves: tuple[str, ...]) -> str | None:
+    """Cachea el emparejamiento tarifa→clave del catálogo (miles de filas, pocas
+    descripciones distintas)."""
+
+    return resolver_clave_config(tarifa, claves)
+
+
+def _resolver_clase(
+    tarifa: object, cfg: LoadConfig, default: ClaseTarifaria
+) -> ClaseTarifaria:
+    """Devuelve los parámetros de clase para una descripción de tarifa real.
+
+    Primero intenta la coincidencia exacta con el catálogo; si falla —lo habitual
+    con el texto de ``DESTARI``— resuelve de forma semántica por clase y nivel de
+    tensión. Solo cae a ``default`` cuando la descripción no es reconocible en
+    absoluto.
+    """
+
+    t = str(tarifa)
+    exacta = cfg.clases.get(t)
+    if exacta is not None:
+        return exacta
+    clave = _clave_resuelta(t, tuple(cfg.clases.keys()))
+    return cfg.clases.get(clave, default) if clave else default

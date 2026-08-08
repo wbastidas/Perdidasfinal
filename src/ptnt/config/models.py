@@ -244,11 +244,63 @@ class SignalsConfig(_Strict):
     # S8 — dispersión intra-puesto
     s8_min_unidades: int = 3
     s8_cv_min: float = 0.60
+    # S9 — déficit contra la base propia (clave en industrial/oficial, donde el
+    # grupo par no es estadísticamente válido)
+    s9_deficit_min: float = Field(0.35, ge=0.0, le=1.0)
     # No supervisado
     contaminacion: float = Field(0.05, gt=0, lt=0.5)
     usar_no_supervisado: bool = True
-    # Campo de agrupamiento de grupo par (el usuario pidió CLIRLSCOD)
+    # Campo de agrupamiento de grupo par usado como respaldo cuando el padrón no
+    # viene segmentado. Con segmentación activa, el grupo par lo arma
+    # `ptnt.segment.peers` (clase × tensión × estrato × CLIRLSCOD).
     campo_grupo_par: str = "grupo_lectura"
+
+
+# ---------------------------------------------------------------------------
+# Segmentación de clientes (§11.3)
+# ---------------------------------------------------------------------------
+class SegmentacionConfig(_Strict):
+    """Ejes de segmentación del padrón para el análisis de PNT.
+
+    Los cortes de estrato son configurables porque dependen de la distribución
+    real de la distribuidora: los valores por defecto siguen los bloques de
+    consumo residencial usados en el pliego tarifario ecuatoriano (incluido el
+    límite de 130 kWh/mes de la Tarifa Dignidad en Costa/Oriente/Insular), pero
+    deben ajustarse contra el histograma real del padrón antes de producción.
+    """
+
+    habilitada: bool = True
+    columna_tarifa: str = "tariff_description"
+    # Percentil de la historia propia que define el "nivel habitual" del cliente.
+    # Alto a propósito: responde "de qué tamaño es este cliente", no "cuánto
+    # consumió" — si se usara la media, un hurto prolongado bajaría el estrato y
+    # el cliente terminaría comparado contra pares igual de deprimidos.
+    percentil_consumo_base: float = Field(75.0, ge=50.0, le=100.0)
+    # Mínimo de miembros para que un grupo par sea estadísticamente utilizable.
+    min_pares: int = Field(8, ge=3)
+    cortes_residencial_kwh: list[float] = Field(
+        default_factory=lambda: [50, 100, 130, 200, 300, 500, 1000]
+    )
+    cortes_no_residencial_kwh: list[float] = Field(
+        default_factory=lambda: [200, 1000, 5000, 20000, 100000]
+    )
+    # A partir de aquí un cliente se revisa de forma individual y no por su
+    # posición relativa en el ranking: un error del 5 % en él vale más que el
+    # 100 % de un residencial pequeño.
+    umbral_gran_cliente_kwh_mes: float = Field(5000.0, gt=0)
+
+    @field_validator("cortes_residencial_kwh", "cortes_no_residencial_kwh")
+    @classmethod
+    def _cortes_crecientes(cls, v: list[float]) -> list[float]:
+        if not v:
+            raise ValueError("La lista de cortes de estrato no puede estar vacía.")
+        if any(b <= a for a, b in zip(v, v[1:])):
+            raise ValueError(
+                f"Los cortes de estrato deben ser estrictamente crecientes: {v}"
+            )
+        if v[0] <= 0:
+            raise ValueError("El primer corte de estrato debe ser mayor que cero.")
+        return v
 
 
 # ---------------------------------------------------------------------------
@@ -431,6 +483,7 @@ class AppConfig(_Strict):
     promedio: AveragingConfig = Field(default_factory=AveragingConfig)
     carga: LoadConfig
     senales: SignalsConfig = Field(default_factory=SignalsConfig)
+    segmentacion: SegmentacionConfig = Field(default_factory=SegmentacionConfig)
     catalogos: CatalogosConfig = Field(default_factory=CatalogosConfig)
     perdidas: PerdidasConfig = Field(default_factory=PerdidasConfig)
     alumbrado: AlumbradoConfig = Field(default_factory=AlumbradoConfig)

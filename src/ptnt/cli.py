@@ -16,6 +16,10 @@ from rich.console import Console
 from rich.table import Table
 
 from ptnt.config.loader import ConfigError, load_config
+from ptnt.segment.report import (
+    grandes_clientes_a_revisar,
+    rendimiento_por_segmento,
+)
 
 app = typer.Typer(
     add_completion=False,
@@ -128,21 +132,62 @@ def analizar(
     console.print(f"  ΔP total: {result.metricas.get('delta_p_total_kw'):.1f} kW "
                   f"({result.metricas.get('delta_p_total_pct'):.1f} %)")
 
+    # --- Segmentación: dónde está la energía y qué rinde inspeccionar ---------
+    if not result.segmentos_por_clase.empty:
+        console.print("\n[bold]Segmentación del padrón[/] "
+                      f"(clasificado: {result.metricas.get('segmentacion_cobertura_pct')}%)")
+        t = Table()
+        for c, j in (("Clase", "left"), ("Clientes", "right"), ("% clientes", "right"),
+                     ("kWh base/mes", "right"), ("% energía", "right")):
+            t.add_column(c, justify=j)
+        for _, row in result.segmentos_por_clase.iterrows():
+            t.add_row(str(row["clase_consumo"]), f"{int(row['clientes']):,}",
+                      f"{row['pct_clientes']:.1f}", f"{row['kwh_base_mes']:,.0f}",
+                      f"{row['pct_energia']:.1f}")
+        console.print(t)
+
+        rend = rendimiento_por_segmento(result.ranking)
+        if not rend.tabla.empty:
+            console.print("\n[bold]Rendimiento esperado por visita[/] "
+                          "[dim](inspeccionando el top 5 % de cada clase)[/]")
+            t2 = Table()
+            for c in ("Clase", "Visitas", "kWh recuperables", "kWh por visita"):
+                t2.add_column(c, justify="right" if c != "Clase" else "left")
+            for _, row in rend.tabla.iterrows():
+                t2.add_row(str(row["clase_consumo"]), f"{int(row['visitas']):,}",
+                           f"{row['recuperable_top_kwh_mes']:,.0f}",
+                           f"[bold]{row['kwh_por_visita']:,.0f}[/]")
+            console.print(t2)
+            for rec in rend.recomendaciones:
+                console.print(f"  [cyan]→[/] {rec}")
+
+        gc = grandes_clientes_a_revisar(result.ranking, top=5)
+        if not gc.empty:
+            console.print("\n[bold]Grandes clientes con indicios[/] "
+                          "[dim](revisión individual: su ranking relativo los esconde)[/]")
+            for _, row in gc.iterrows():
+                console.print(
+                    f"  {row['contract_account']}  {row.get('clase_consumo', '')}"
+                    f"  score={row['score']:.3f}"
+                    f"  recuperable={row['recuperable_kwh_mes']:,.0f} kWh/mes")
+
     console.print(f"\n[bold]Top {top} clientes por sospecha de hurto[/] "
                   f"(sospechosos: {result.metricas['n_sospechosos']})")
     tabla = Table()
     tabla.add_column("#")
     tabla.add_column("Cuenta")
+    tabla.add_column("Clase")
     tabla.add_column("Score", justify="right")
-    tabla.add_column("Señales", justify="right")
+    tabla.add_column("Recuperable", justify="right")
     tabla.add_column("Razón principal")
     for _, row in result.ranking.head(top).iterrows():
         razon = row["razones"][0] if row["razones"] else "-"
         tabla.add_row(
             str(int(row["rank"])),
             str(row["contract_account"]),
+            str(row.get("clase_consumo", "-")),
             f"{row['score']:.3f}",
-            str(int(row["n_senales_activas"])),
+            f"{row.get('recuperable_kwh_mes', 0):,.0f}",
             razon,
         )
     console.print(tabla)

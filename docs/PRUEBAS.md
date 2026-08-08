@@ -28,6 +28,7 @@ pytest --cov=ptnt --cov-report=term-missing   # con cobertura
 | `test_survey.py` | **Derivación de impedancias** (AWG/kcmil, R vs fabricante <3%, cobertura 415/415, kcmil mal etiquetado), **focalización** (ramales ignoran acometidas, todos los niveles, ramal sin señales no prioritario, baja confiabilidad = problema de datos, sectores por cercanía, órdenes por rendimiento por visita, exportable/reportable) |
 | `test_anomalies_confirmed.py` | **Transferencias** (detecta la inyectada, 1 mes = NO_APLICABLE, pico no es transferencia), **clientes faltantes** (ambos sentidos, umbral de energía, concentración por ruta), **incoherencias** (PNT negativa bloquea publicación, transferencia excluye del ranking), **base de multados** (lift real, control negativo con ranking aleatorio, fecha de corte contra fuga, calibración detecta señal inútil, PU learning), **ruta comercial** (sospecha, incoherencia por ceros/estimadas, nivel del plan) |
 | `test_catalog_lv.py` | **Catálogo CATALOGOESTRUCTURA** (clasificación por prefijo, kVA/banco, balastro AP, kVAR, doble nivel), **agregación LV al transformador** sin doble conteo en tronco, **totalizador** (no re-suma individuales), **semáforos/cámaras** como AP no medido, balastro desde catálogo |
+| `test_segmentacion.py` | **Clasificación de tarifas reales** (texto libre de DESTARI, no se adivina residencial), **resolución semántica de la clave del catálogo** (evita que los industriales caigan a la clase por defecto), **grupo par jerárquico** (nivel más fino disponible, degradación, sin grupo se reporta, confianza pondera S5), **el estrato NO entra en el grupo par** (regresión crítica: sería circular), **S9** (déficit contra la base propia), **recuperable segmentado** (el global subestima al industrial e inventa al pequeño; máximo de dos estimadores; mediana robusta), **rendimiento por visita** (ordena por valor, no por score) y **grandes clientes** (solo con indicios reales) |
 | `test_locations_versioning.py` | **Identidad geográfica estable** (código determinista, agrupa coordenadas cercanas, sectores conservan ubicación al cargar datos nuevos y ante reordenamiento), **registro persistente** (acumula priorizaciones sin inflar por re-ejecución, reincidencia, cierre por inspección, persistencia en disco), **versionado de topología** (alta, sin cambio, cada hash reacciona solo a su dominio, invalidación selectiva por tipo de cambio, historial, **las ubicaciones sobreviven al cambio de red**) |
 
 **Propiedades verificadas (hypothesis):**
@@ -46,6 +47,13 @@ pytest --cov=ptnt --cov-report=term-missing   # con cobertura
   crean correctamente.
 - **Reconciliación:** produce una corrección de potencia medible (el SIG usaba el
   último mes; el sistema, el promedio multi-mes).
+- **Segmentación:** con y sin segmentar sobre el mismo padrón, el recall no se
+  degrada y la **energía recuperable priorizada en el top 10 % crece más de 3×**.
+  Es la prueba que justifica el módulo: mismo esfuerzo de cuadrilla, mucha más
+  energía en juego.
+- **Clase tarifaria desde texto real:** ninguna descripción de `DESTARI` coincide
+  literalmente con las claves del catálogo, y aun así cada clase recibe su propio
+  `cosφ` — si la resolución semántica fallara, todas caerían al valor por defecto.
 
 `test_survey_e2e.py` valida el **requerimiento general** de punta a punta: el plan
 cubre todos los niveles, cada objetivo es accionable (acción + motivo), las órdenes
@@ -92,7 +100,7 @@ python scripts/demo_completa.py            # 9 pasos, ~1 min
 |---|---|---|
 | 1 | Generación del escenario | 1 200 clientes, 36 meses, 64 hurtos inyectados, 38 multados (59 % histórico) |
 | 2 | Carga y versionado inicial | ALTA v1: 337 tramos, 164 clientes |
-| 3 | Análisis comercial | promedio 12 meses, Δ potencia SIG→corregido −91 %, 60 sospechosos |
+| 3 | Análisis comercial y **segmentación** | 100 % clasificado; no residenciales = 2,6 % de clientes y **85 % de la energía**; una visita industrial rinde **49×** más que una residencial |
 | 4 | Red y balance con incertidumbre | PNT 1 067 kWh = 2,3 % (P10–P90 769–1 377) |
 | 5 | Diagnóstico de credibilidad | transferencia F002→F003 detectada (simetría 0,90); 36/36 clientes faltantes; sin incoherencias |
 | 6 | Validación contra multados | **lift 12,6×**, AUC 0,861, mediana de hurtos en el 3 % del ranking |
@@ -107,7 +115,7 @@ tests los fijan como garantía de regresión.
 ## Estado actual
 
 ```
-209 passed
+245 passed
 ```
 
 Cobertura del núcleo de dominio (objetivo de la especificación ≥ 85 %):

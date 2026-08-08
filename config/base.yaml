@@ -194,9 +194,32 @@ senales:
   s7_cv_max: 0.05
   s8_min_unidades: 3
   s8_cv_min: 0.60
+  s9_deficit_min: 0.35                  # déficit contra la base propia del cliente
   contaminacion: 0.05
   usar_no_supervisado: true
-  campo_grupo_par: "grupo_lectura"      # CLIRLSCOD
+  campo_grupo_par: "grupo_lectura"      # CLIRLSCOD (respaldo sin segmentación)
+
+# -----------------------------------------------------------------------------
+# Segmentación de clientes (§11.3)
+#
+# Un taller, un supermercado y un departamento no se parecen en nada: comparar a
+# todos contra la misma referencia produce falsos positivos en residenciales
+# pequeños y falsos NEGATIVOS en comerciales e industriales, que es donde está la
+# energía. El grupo par se arma por clase × nivel de tensión × estrato × ruta
+# comercial (CLIRLSCOD), degradando a un nivel más general cuando el grupo fino
+# no reúne el mínimo de miembros.
+# -----------------------------------------------------------------------------
+segmentacion:
+  habilitada: true
+  columna_tarifa: "tariff_description"   # DESTARI / TIPOTARIFA de ATRIBUTOSCONSUMIDOR
+  percentil_consumo_base: 75.0           # nivel habitual del cliente (no la media)
+  min_pares: 8                           # mínimo para que el grupo par sea utilizable
+  # Bloques de consumo residencial (kWh/mes). El corte de 130 corresponde al
+  # límite de la Tarifa Dignidad en Costa/Oriente/Insular.
+  # AJUSTAR contra el histograma real del padrón antes de producción.
+  cortes_residencial_kwh: [50, 100, 130, 200, 300, 500, 1000]
+  cortes_no_residencial_kwh: [200, 1000, 5000, 20000, 100000]
+  umbral_gran_cliente_kwh_mes: 5000.0    # revisión individual, no por ranking relativo
 
 # -----------------------------------------------------------------------------
 # Catálogos de red

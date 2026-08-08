@@ -154,12 +154,22 @@ def s7_planitud(serie: np.ndarray, cfg: SignalsConfig) -> tuple[float, dict]:
 # Señales de grupo (requieren el universo)
 # --------------------------------------------------------------------------- #
 def s5_divergencia_grupo_par(
-    consumo_medio: pd.Series, grupos: pd.Series, cfg: SignalsConfig
+    consumo_medio: pd.Series,
+    grupos: pd.Series,
+    cfg: SignalsConfig,
+    confianza: pd.Series | None = None,
 ) -> pd.Series:
-    """S5 — cliente bajo el percentil P de su grupo par (mismo CLIRLSCOD/clase).
+    """S5 — cliente bajo el percentil P de su **grupo par segmentado**.
 
-    ``consumo_medio`` indexado por cuenta; ``grupos`` mapea cuenta→grupo par.
-    Devuelve intensidad por cuenta.
+    ``consumo_medio`` indexado por cuenta; ``grupos`` mapea cuenta→grupo par (ver
+    `ptnt.segment.peers`, que arma la jerarquía clase × tensión × estrato × ruta).
+
+    ``confianza`` pondera la intensidad según **qué tan fino** fue el grupo que se
+    pudo usar: quedar por debajo de residenciales del mismo estrato y ruta es
+    evidencia fuerte; quedar por debajo de "toda la clase residencial" es apenas un
+    indicio, porque el grupo mezcla departamentos con casas grandes. Sin este
+    factor, ambas comparaciones entrarían al ranking con el mismo peso y las
+    segundas —que son muchas más— ahogarían a las primeras.
     """
 
     df = pd.DataFrame({"kwh": consumo_medio, "grupo": grupos})
@@ -176,7 +186,35 @@ def s5_divergencia_grupo_par(
         for cuenta in sub.index[bajo]:
             deficit = 1 - sub.loc[cuenta, "kwh"] / mediana
             out.loc[cuenta] = float(np.clip(deficit, 0, 1))
+    if confianza is not None:
+        peso = confianza.reindex(out.index).fillna(0.0).astype(float).clip(0, 1)
+        out = out * peso
     return out
+
+
+def s9_deficit_contra_base_propia(
+    consumo_medio: pd.Series, consumo_base: pd.Series, cfg: SignalsConfig
+) -> pd.Series:
+    """S9 — el cliente consume muy por debajo de **su propio** nivel habitual.
+
+    Existe porque el grupo par no sirve para todas las clases. En industrial y
+    oficial hay pocos clientes y son enormemente heterogéneos: comparar una
+    fábrica de hielo contra una imprenta no dice nada. Para ellos la única
+    referencia válida es la propia historia, y esta señal la explota directamente.
+
+    Complementa a S1/S3 (que buscan la *forma* de la caída) midiendo la *magnitud*
+    del hueco sostenido frente al nivel base, sin exigir un patrón temporal.
+    """
+
+    actual = consumo_medio.astype(float)
+    base = consumo_base.reindex(actual.index).astype(float)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        deficit = np.where(base > 0, 1.0 - actual / base, 0.0)
+    deficit = np.nan_to_num(deficit, nan=0.0)
+    # Solo cuenta si supera el umbral: toda serie tiene algo de dispersión natural
+    # respecto de su percentil alto, y sin umbral la señal se activaría siempre.
+    deficit = np.where(deficit >= cfg.s9_deficit_min, deficit, 0.0)
+    return pd.Series(np.clip(deficit, 0.0, 1.0), index=actual.index)
 
 
 def s8_dispersion_intra_puesto(
@@ -264,19 +302,41 @@ def compute_signals(
     # Consumo medio por cuenta para señales de grupo
     consumo_medio = pd.Series(np.nanmean(matriz, axis=1), index=cuentas)
 
-    grupos = (
-        cli[grupo_col].reindex(cuentas)
-        if grupo_col in cli.columns
-        else pd.Series(np.nan, index=cuentas)
-    )
+    # Grupo par: se prefiere el segmentado (clase × tensión × estrato × ruta) si el
+    # padrón ya viene segmentado; si no, se cae al campo configurado (CLIRLSCOD).
+    if "grupo_par_id" in cli.columns:
+        grupos = cli["grupo_par_id"].reindex(cuentas)
+        confianza = (
+            cli["grupo_par_confianza"].reindex(cuentas)
+            if "grupo_par_confianza" in cli.columns
+            else None
+        )
+    else:
+        grupos = (
+            cli[grupo_col].reindex(cuentas)
+            if grupo_col in cli.columns
+            else pd.Series(np.nan, index=cuentas)
+        )
+        confianza = None
     puestos = (
         cli[puesto_col].reindex(cuentas)
         if puesto_col in cli.columns
         else pd.Series(np.nan, index=cuentas)
     )
 
-    s5 = s5_divergencia_grupo_par(consumo_medio, grupos, cfg).reindex(cuentas).fillna(0.0)
+    s5 = (
+        s5_divergencia_grupo_par(consumo_medio, grupos, cfg, confianza)
+        .reindex(cuentas).fillna(0.0)
+    )
     s8 = s8_dispersion_intra_puesto(consumo_medio, puestos, cfg).reindex(cuentas).fillna(0.0)
+
+    base_propia = (
+        cli["consumo_base_kwh"].reindex(cuentas)
+        if "consumo_base_kwh" in cli.columns
+        else pd.Series(np.nan, index=cuentas)
+    )
+    s9 = s9_deficit_contra_base_propia(consumo_medio, base_propia, cfg).reindex(
+        cuentas).fillna(0.0)
 
     señales = pd.DataFrame(
         {
@@ -287,15 +347,28 @@ def compute_signals(
             "S5": s5.to_numpy(),
             "S7": s7,
             "S8": s8.to_numpy(),
+            "S9": s9.to_numpy(),
         }
     )
-    cols = ["S1", "S3", "S4", "S5", "S7", "S8"]
+    cols = ["S1", "S3", "S4", "S5", "S7", "S8", "S9"]
     # registra evidencia de señales de grupo
+    niveles = (
+        cli["grupo_par_nivel"].reindex(cuentas)
+        if "grupo_par_nivel" in cli.columns
+        else pd.Series(None, index=cuentas, dtype=object)
+    )
     for c, v in zip(cuentas, s5.to_numpy()):
         if v > 0:
-            evidencia[c].append({"signal": "S5", "deficit_grupo": round(float(v), 3)})
+            ev = {"signal": "S5", "deficit_grupo": round(float(v), 3)}
+            nivel = niveles.get(c)
+            if nivel is not None and not (isinstance(nivel, float) and np.isnan(nivel)):
+                ev["nivel_grupo_par"] = str(nivel)
+            evidencia[c].append(ev)
     for c, v in zip(cuentas, s8.to_numpy()):
         if v > 0:
             evidencia[c].append({"signal": "S8", "deficit_puesto": round(float(v), 3)})
+    for c, v in zip(cuentas, s9.to_numpy()):
+        if v > 0:
+            evidencia[c].append({"signal": "S9", "deficit_base_propia": round(float(v), 3)})
 
     return SignalResult(señales=señales, evidencia=evidencia, columnas_senal=cols)

@@ -28,6 +28,7 @@ import numpy as np
 import pandas as pd
 
 from ptnt.config.models import ComercialConfig
+from ptnt.segment.classification import resolver_clave_config
 
 
 class CommercialParseError(Exception):
@@ -307,8 +308,16 @@ def _validar_rangos(
         return
     tarifa = raw[cfg.columnas.tarifa].to_numpy()
     prom_mensual = np.nanmean(kwh_matrix, axis=1)
+    # Las claves del catálogo son nombres cortos ("BT Residencial") pero DESTARI
+    # trae texto libre. Comparar por igualdad dejaría todas las máscaras vacías y
+    # la validación no advertiría nunca — un silencio peligroso, porque este
+    # control existe justamente para detectar errores de separador de miles.
+    claves = tuple(cfg.rangos_plausibles_kwh_mes.keys())
+    resuelta = np.array([
+        resolver_clave_config(t, claves) or str(t) for t in tarifa
+    ], dtype=object)
     for clase, rango in cfg.rangos_plausibles_kwh_mes.items():
-        mask = tarifa == clase
+        mask = (tarifa == clase) | (resuelta == clase)
         if mask.sum() == 0:
             continue
         vals = prom_mensual[mask]

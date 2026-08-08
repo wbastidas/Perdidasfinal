@@ -31,6 +31,37 @@ _CLASE_BASE_KWH = {
     "BT Industrial": (8000, 3000),
     "MT Industrial": (120000, 50000),
 }
+# Zonas: las rutas de lectura no son muestras aleatorias del padrón, son
+# territorios con vocación. Un corredor comercial tiene otra mezcla de clases que
+# un barrio, y esa correlación clase↔geografía es la que justifica separar por
+# clase antes de comparar: sin ella, comparar dentro de la ruta ya bastaría.
+# La mezcla global resultante es ~85 % residencial, que es lo típico de un padrón
+# de distribución: el residencial domina en número de clientes pero no en energía.
+# Orden de las columnas: [residencial, comercial, industrial BT, industrial MT].
+_ZONAS = ["residencial", "comercial", "industrial"]
+_ZONA_PROPORCION = np.array([0.70, 0.22, 0.08])
+_ZONA_MEZCLA = {
+    "residencial": np.array([0.96, 0.035, 0.005, 0.000]),
+    "comercial":   np.array([0.45, 0.500, 0.045, 0.005]),
+    "industrial":  np.array([0.30, 0.250, 0.380, 0.070]),
+}
+# Descripciones de tarifa como aparecen en DESTARI/TIPOTARIFA, para ejercitar el
+# clasificador con texto parecido al real y no con etiquetas ya normalizadas.
+_CLASE_DESTARI = {
+    "BT Residencial": [
+        "RESIDENCIAL BAJA TENSION", "RESIDENCIAL TEMPORAL", "TARIFA DIGNIDAD",
+    ],
+    "BT Comercial": [
+        "COMERCIAL SIN DEMANDA BAJA TENSION", "COMERCIAL CON DEMANDA BAJA TENSION",
+    ],
+    "BT Industrial": [
+        "INDUSTRIAL CON DEMANDA BAJA TENSION", "INDUSTRIAL ARTESANAL BAJA TENSION",
+    ],
+    "MT Industrial": [
+        "INDUSTRIAL CON DEMANDA MEDIA TENSION",
+        "INDUSTRIAL CON DEMANDA HORARIA MEDIA TENSION",
+    ],
+}
 _HURTO_TIPOS = ["caida_recuperacion", "cero_activo", "ruptura_nivel", "planitud", "bajo_grupo"]
 
 
@@ -95,8 +126,23 @@ def generate_commercial_csv(
     filas = []
     hurtos_por_tipo: dict[str, int] = {t: 0 for t in _HURTO_TIPOS}
 
+    # Cada ruta de lectura (CLIRLSCOD) pertenece a una zona con su propia mezcla de
+    # clases: barrios residenciales, corredores comerciales y polígonos
+    # industriales. Es como es la realidad, y es lo que hace que separar por clase
+    # tenga valor: sin esta correlación, una ruta sería una muestra aleatoria del
+    # padrón y comparar dentro de la ruta ya bastaría.
+    rutas = [
+        f"F{a:03d}-R{r:02d}"
+        for a in range(1, n_alimentadores + 1) for r in range(1, 12)
+    ]
+    zona_de_ruta = {
+        ruta: str(rng.choice(_ZONAS, p=_ZONA_PROPORCION)) for ruta in rutas
+    }
+
     for i in range(n_clientes):
-        clase = _CLASES[rng.integers(0, len(_CLASES))]
+        grupo_lectura = str(rng.choice(rutas))          # CLIRLSCOD
+        alimentador = grupo_lectura.split("-")[0]
+        clase = str(rng.choice(_CLASES, p=_ZONA_MEZCLA[zona_de_ruta[grupo_lectura]]))
         base, ruido = _CLASE_BASE_KWH[clase]
         base = base * rng.uniform(0.6, 1.6)
         serie = _serie_normal(base, ruido, n_meses, rng)
@@ -110,8 +156,6 @@ def generate_commercial_csv(
 
         cuenta = f"2000{i:08d}"
         division = f"10{rng.integers(1, 6):02d}"
-        alimentador = f"F{rng.integers(1, n_alimentadores + 1):03d}"
-        grupo_lectura = f"{alimentador}-R{rng.integers(1, 12):02d}"  # CLIRLSCOD
         x = 620000 + rng.uniform(0, 5000)
         y = 9755000 + rng.uniform(0, 5000)
         fases = {"BT Residencial": 1, "BT Comercial": 2, "BT Industrial": 3, "MT Industrial": 3}[clase]
@@ -124,7 +168,7 @@ def generate_commercial_csv(
             "DIVISION": division,
             "CUENTACONTRATO": cuenta,
             "NOMBRE": f"CLIENTE SINTETICO {i}",
-            "DESTARI": clase,
+            "DESTARI": str(rng.choice(_CLASE_DESTARI[clase])),
             "ZZUTM_X": f"{x:.6f}",
             "ZZUTM_Y": f"{y:.6f}",
             "CLIRLSCOD": grupo_lectura,

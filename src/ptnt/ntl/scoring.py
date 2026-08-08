@@ -22,6 +22,7 @@ _RAZONES = {
     "S5": "Consumo muy por debajo de su grupo par (misma ruta/clase)",
     "S7": "Consumo anómalamente plano (posible consumo fijo declarado)",
     "S8": "Consumo muy por debajo de sus vecinos del mismo transformador",
+    "S9": "Consumo muy por debajo de su propio nivel histórico habitual",
     "UNSUP": "Patrón atípico detectado por análisis no supervisado",
 }
 
@@ -33,6 +34,26 @@ class NtlRanking:
     ranking: pd.DataFrame  # contract_account, score, rank, razones, recuperable_kwh
     n_clientes: int
     n_sospechosos: int
+    # "segmentado" (contra el grupo par del cliente) o "global" (mediana única).
+    # Se reporta para que nadie interprete un recuperable global como si fuera fino.
+    metodo_recuperable: str = "global"
+
+    def por_clase(self) -> pd.DataFrame:
+        """Resumen del ranking por clase de consumo (si el padrón venía segmentado)."""
+
+        if "clase_consumo" not in self.ranking.columns:
+            return pd.DataFrame()
+        return (
+            self.ranking.groupby("clase_consumo")
+            .agg(
+                clientes=("contract_account", "count"),
+                sospechosos=("n_senales_activas", lambda s: int((s > 0).sum())),
+                recuperable_kwh_mes=("recuperable_kwh_mes", "sum"),
+                score_medio=("score", "mean"),
+            )
+            .reset_index()
+            .sort_values("recuperable_kwh_mes", ascending=False)
+        )
 
 
 def _unsupervised_scores(features: np.ndarray, contaminacion: float) -> np.ndarray | None:
@@ -66,14 +87,23 @@ def score_customers(
     columnas_senal: list[str],
     consumo_medio: pd.Series | None = None,
     evidencia: dict[str, list[dict]] | None = None,
+    clientes: pd.DataFrame | None = None,
 ) -> NtlRanking:
     """Produce el ranking de sospecha por consenso de rangos.
 
     * Cada señal aporta su intensidad [0,1].
     * El score de consenso es el promedio de los rangos percentiles de las señales
       activas más el score no supervisado (si está disponible).
-    * ``recuperable_kwh`` estima la energía mensual recuperable como la diferencia
-      entre el consumo esperado del grupo par y el observado, cuando aplica.
+    * ``recuperable_kwh`` estima la energía mensual recuperable **dentro del
+      segmento** del cliente cuando ``clientes`` trae la segmentación
+      (`ptnt.segment`); si no, cae al método global, mucho más grueso.
+
+    ``clientes`` es el padrón segmentado (columnas ``grupo_par_id``,
+    ``consumo_base_kwh``, ``clase_consumo``, ``es_gran_cliente``). Aportarlo cambia
+    el resultado de forma importante: sin él, el recuperable se mide contra una
+    **mediana global** que mezcla residenciales con industriales, lo que subestima
+    gravemente a los grandes consumidores —donde está la energía— y le inventa
+    recuperable a los pequeños.
     """
 
     cuentas = señales["contract_account"].to_numpy()
@@ -102,17 +132,47 @@ def score_customers(
         if unsup is not None:
             score = 0.7 * consenso_senales + 0.3 * unsup
 
-    # Recuperable estimado
+    # --- Energía recuperable estimada ---------------------------------------
     recuperable = np.zeros(n)
+    metodo_recuperable = "no_calculado"
     if consumo_medio is not None:
-        cm = consumo_medio.reindex(cuentas).to_numpy(dtype=float)
-        mediana_global = np.nanmedian(cm[cm > 0]) if np.any(cm > 0) else 0.0
-        # Para clientes con señal de déficit, el hueco frente a la mediana
-        deficit_signals = np.isin(columnas_senal, ["S4", "S5", "S8"])
-        tiene_deficit = (S[:, deficit_signals] > 0).any(axis=1) if deficit_signals.any() else np.zeros(n, bool)
-        recuperable = np.where(
-            tiene_deficit, np.maximum(mediana_global - np.nan_to_num(cm), 0.0), 0.0
+        cm_serie = consumo_medio.reindex(cuentas)
+        cm = cm_serie.to_numpy(dtype=float)
+        deficit_signals = np.isin(columnas_senal, ["S4", "S5", "S8", "S9"])
+        tiene_deficit = (
+            (S[:, deficit_signals] > 0).any(axis=1)
+            if deficit_signals.any() else np.zeros(n, bool)
         )
+
+        segmentado = (
+            clientes is not None
+            and "grupo_par_id" in clientes.columns
+            and "consumo_base_kwh" in clientes.columns
+        )
+        if segmentado:
+            from ptnt.segment.peers import (
+                consumo_esperado_por_grupo,
+                energia_recuperable,
+            )
+
+            cli = clientes.set_index("contract_account")
+            grupos = cli["grupo_par_id"].reindex(cuentas)
+            grupos.index = cm_serie.index
+            base = cli["consumo_base_kwh"].reindex(cuentas)
+            base.index = cm_serie.index
+            esperado = consumo_esperado_por_grupo(cm_serie, grupos)
+            rec = energia_recuperable(cm_serie, esperado, base).to_numpy(dtype=float)
+            recuperable = np.where(tiene_deficit, rec, 0.0)
+            metodo_recuperable = "segmentado"
+        else:
+            # Método global: una única mediana para todo el padrón. Se conserva
+            # como respaldo cuando no hay segmentación, pero es notoriamente
+            # sesgado — ver el docstring.
+            mediana_global = np.nanmedian(cm[cm > 0]) if np.any(cm > 0) else 0.0
+            recuperable = np.where(
+                tiene_deficit, np.maximum(mediana_global - np.nan_to_num(cm), 0.0), 0.0
+            )
+            metodo_recuperable = "global"
 
     # Razones principales (top-3 señales por intensidad)
     razones_list = []
@@ -136,10 +196,30 @@ def score_customers(
     )
     if unsup is not None:
         df["score_no_supervisado"] = unsup
+
+    # Arrastra el segmento al ranking: sin esto el resultado no se puede leer por
+    # clase ni entregar a dos cuadrillas distintas (masiva vs. grandes clientes).
+    if clientes is not None:
+        cols_seg = [
+            c for c in (
+                "clase_consumo", "nivel_tension", "estrato_consumo", "segmento",
+                "grupo_par_nivel", "es_gran_cliente", "consumo_base_kwh",
+            )
+            if c in clientes.columns
+        ]
+        if cols_seg:
+            df = df.merge(
+                clientes[["contract_account", *cols_seg]],
+                on="contract_account", how="left",
+            )
+
     df = df.sort_values("score", ascending=False).reset_index(drop=True)
     df["rank"] = np.arange(1, n + 1)
 
     umbral = np.nanpercentile(score, 100 * (1 - cfg.contaminacion)) if n else 0.0
     n_sosp = int(np.sum(score >= umbral)) if n else 0
 
-    return NtlRanking(ranking=df, n_clientes=n, n_sospechosos=n_sosp)
+    return NtlRanking(
+        ranking=df, n_clientes=n, n_sospechosos=n_sosp,
+        metodo_recuperable=metodo_recuperable,
+    )

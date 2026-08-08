@@ -21,24 +21,33 @@ datos de la red (esquema **Puesto → Unidad** homologado CNEL EP):
    con el consumo del último mes — sesgo grave en clientes **no residenciales**.
 4. **Genera el informe de reconciliación** de potencia (SIG vs. corregido) con
    descomposición de la diferencia por causa (energía-vs-demanda, √3, cosφ, etc.).
-5. **Identifica clientes con posible hurto** (pérdidas no técnicas) mediante
-   señales de comportamiento sobre la serie de 36 meses (S1–S10), grupos par por
-   **CLIRLSCOD**, detección no supervisada y un ranking de consenso con la
-   energía recuperable estimada y las razones en lenguaje operativo.
-6. **Dice dónde ir a hacer el levantamiento**: rankings por alimentador, zona,
+5. **Segmenta el padrón** por clase tarifaria, nivel de tensión, modalidad de
+   medición y estrato de consumo (desde `ATRIBUTOSCONSUMIDOR`), de modo que cada
+   cliente se compare solo contra clientes equivalentes. Un taller y un
+   departamento no se parecen: comparar a todos contra la misma referencia genera
+   falsos positivos en residenciales pequeños y **falsos negativos en comerciales
+   e industriales**, que es donde está la energía.
+6. **Identifica clientes con posible hurto** (pérdidas no técnicas) mediante
+   señales de comportamiento sobre la serie de 36 meses (S1–S9), **grupos par
+   jerárquicos** (clase × tensión × fases × **CLIRLSCOD**, con degradación
+   controlada y factor de confianza), detección no supervisada y un ranking de
+   consenso con la energía recuperable estimada **dentro del segmento** y las
+   razones en lenguaje operativo.
+7. **Dice dónde ir a hacer el levantamiento**: rankings por alimentador, zona,
    ramal, transformador, **sector geográfico** y cliente, con órdenes de trabajo
    priorizadas por rendimiento por visita, exportables y reportables.
-7. **Mantiene la identidad de las ubicaciones entre corridas**: los sectores y
+8. **Mantiene la identidad de las ubicaciones entre corridas**: los sectores y
    objetivos se identifican por su **coordenada**, no por el orden del cálculo, de
    modo que una orden emitida hoy sigue apuntando al mismo sitio físico después de
    cargar el mes siguiente o de modificar la topología.
-8. **Publica los resultados en dos interfaces web**: un tablero de análisis para
+9. **Publica los resultados en dos interfaces web**: un tablero de análisis para
    escritorio (Streamlit) y un visor de solo lectura (FastAPI) para consulta por
    terceros.
 
 > Documentación completa en [`docs/`](docs/): [Arquitectura](docs/ARQUITECTURA.md) ·
 > [Instalación en Windows](docs/INSTALACION_WINDOWS.md) ·
 > **[Guía de operación paso a paso](docs/GUIA_OPERACION.md)** ·
+> [Segmentación de clientes](docs/SEGMENTACION.md) ·
 > [Focalización de levantamientos](docs/FOCALIZACION.md) ·
 > [Diagnóstico y validación](docs/DIAGNOSTICO.md) ·
 > [Proceso](docs/PROCESO.md) · [Seguridad](docs/SEGURIDAD.md) ·
@@ -133,8 +142,9 @@ src/ptnt/
 │   ├── averaging.py           # promedio multi-mes (mecanismo clave)
 │   └── demand.py              # P, Q, S, I §6 (corrige el √3 y el último-mes)
 ├── quality/reconciliation.py  # informe SIG vs corregido (§6.1)
+├── segment/      # clasificación por tarifa/tensión/estrato + grupo par jerárquico
 ├── ntl/
-│   ├── signals.py             # señales S1–S10 de hurto
+│   ├── signals.py             # señales S1–S9 de hurto
 │   ├── network_signals.py     # N1/N3/N4 (residuo zona, totalizador, cargabilidad)
 │   └── scoring.py             # consenso + ranking
 ├── canonical/    # decodificadores de dominio (fase bitmask, kVA) + field_map (§4)
@@ -170,7 +180,7 @@ pytest -m security      # auth, secretos, visor
 pytest --cov=ptnt       # cobertura
 ```
 
-**209 pruebas** en verde. Detalle de qué cubre cada archivo y los resultados de la
+**245 pruebas** en verde. Detalle de qué cubre cada archivo y los resultados de la
 demostración extremo a extremo en [`docs/PRUEBAS.md`](docs/PRUEBAS.md).
 
 ## Alcance de esta entrega

@@ -88,3 +88,82 @@ def test_reconciliacion_no_residencial(synth_csv):
     assert "delta_p_kw" in result.reconciliacion.columns
     # hay corrección medible
     assert result.reconciliacion["delta_p_kw"].abs().sum() > 0
+
+
+@pytest.mark.integration
+def test_segmentacion_prioriza_la_energia_sin_perder_deteccion(synth_csv):
+    """El beneficio medido de segmentar: **misma capacidad de detectar, mucha más
+    energía priorizada**.
+
+    Es la comprobación que justifica todo el módulo `ptnt.segment`. Con una
+    mediana global, el recuperable del top del ranking está dominado por
+    residenciales pequeños; segmentando, el mismo top concentra la energía de los
+    comerciales e industriales, que cuestan lo mismo de inspeccionar.
+    """
+
+    cfg = load_config("config/base.yaml")
+    hurtos = set(
+        synth_csv.df.loc[synth_csv.df["_hurto"] == 1, "CUENTACONTRATO"].astype(str)
+    )
+
+    def _correr(habilitada: bool):
+        cfg.segmentacion.habilitada = habilitada
+        r = run_analysis(cfg, synth_csv.ruta_csv, persistir=False)
+        rk = r.ranking.copy()
+        rk["_h"] = rk["contract_account"].astype(str).isin(hurtos)
+        k = max(1, int(len(rk) * 0.10))
+        top = rk.head(k)
+        return {
+            "recall": top["_h"].sum() / max(rk["_h"].sum(), 1),
+            "energia_top": float(top["recuperable_kwh_mes"].fillna(0).sum()),
+            "metodo": r.metricas["metodo_recuperable"],
+            "res": r,
+        }
+
+    glob = _correr(False)
+    seg = _correr(True)
+
+    assert glob["metodo"] == "global"
+    assert seg["metodo"] == "segmentado"
+
+    # 1. No se pierde capacidad de detección (tolerancia por el ruido del sintético)
+    assert seg["recall"] >= glob["recall"] - 0.05, (
+        f"segmentar degradó el recall: {glob['recall']:.3f} -> {seg['recall']:.3f}"
+    )
+    # 2. Se prioriza mucha más energía con el mismo número de visitas
+    assert seg["energia_top"] > glob["energia_top"] * 3, (
+        f"segmentar no concentró energía: {glob['energia_top']:,.0f} -> "
+        f"{seg['energia_top']:,.0f} kWh"
+    )
+
+    # 3. El resultado es legible por clase y trae el diagnóstico del grupo par
+    r = seg["res"]
+    assert not r.segmentos_por_clase.empty
+    assert not r.grupos_par_por_nivel.empty
+    assert r.metricas["segmentacion_cobertura_pct"] > 95.0
+    assert "clase_consumo" in r.ranking.columns
+
+
+@pytest.mark.integration
+def test_clase_tarifaria_se_resuelve_desde_el_texto_real_de_destari(synth_csv):
+    """`DESTARI` trae texto libre ("INDUSTRIAL CON DEMANDA MEDIA TENSION"), no las
+    claves del catálogo. Si la resolución fallara, todos caerían a la clase por
+    defecto y los industriales recibirían coeficientes residenciales."""
+
+    cfg = load_config("config/base.yaml")
+    r = run_analysis(cfg, synth_csv.ruta_csv, persistir=False)
+
+    # ninguna descripción del sintético coincide literalmente con el catálogo
+    descripciones = set(r.clientes["tariff_description"])
+    assert not (descripciones & set(cfg.carga.clases.keys()))
+
+    # y aun así cada clase recibe su propio cos(phi) del catálogo
+    pot = r.potencias.merge(
+        r.clientes[["contract_account", "clase_consumo"]], on="contract_account")
+    cos_por_clase = pot.groupby("clase_consumo")["cos_phi_used"].nunique()
+    assert (cos_por_clase >= 1).all()
+    cos_medio = pot.groupby("clase_consumo")["cos_phi_used"].mean()
+    assert cos_medio.nunique() > 1, (
+        "todas las clases recibieron el mismo cos(phi): la resolución de clase "
+        "tarifaria está cayendo al valor por defecto"
+    )
