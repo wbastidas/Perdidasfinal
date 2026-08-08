@@ -57,6 +57,16 @@ def _load_balance(cfg: AppConfig) -> dict:
     return json.loads(bj.read_text(encoding="utf-8")) if bj.exists() else {}
 
 
+def _load_plan(cfg: AppConfig) -> dict:
+    pj = Path(cfg.rutas.salidas) / "plan_levantamientos.json"
+    return json.loads(pj.read_text(encoding="utf-8")) if pj.exists() else {}
+
+
+def _load_work_orders(cfg: AppConfig) -> pd.DataFrame:
+    p = Path(cfg.rutas.salidas) / "ordenes_levantamiento.csv"
+    return pd.read_csv(p) if p.exists() else pd.DataFrame()
+
+
 def create_app(config_path: str = "config/base.yaml") -> FastAPI:
     cfg = load_config(config_path)
     app = FastAPI(title=cfg.visor.titulo, docs_url=None, redoc_url=None)
@@ -104,6 +114,31 @@ def create_app(config_path: str = "config/base.yaml") -> FastAPI:
             return JSONResponse({"error": "sin balance de red calculado"}, status_code=404)
         return JSONResponse(bal)
 
+    @app.get("/api/focalizacion")
+    def api_focalizacion(_user: str = Depends(_auth), nivel: str | None = None,
+                         top: int = 100) -> JSONResponse:
+        """Objetivos de levantamiento, opcionalmente filtrados por nivel."""
+
+        plan = _load_plan(cfg)
+        if not plan:
+            return JSONResponse({"error": "sin plan de focalización"}, status_code=404)
+        objetivos = plan.get("objetivos", [])
+        if nivel:
+            objetivos = [o for o in objetivos if str(o.get("nivel", "")).upper() == nivel.upper()]
+        return JSONResponse({
+            "resumen": plan.get("resumen", {}),
+            "objetivos": objetivos[: max(1, min(top, 5000))],
+        })
+
+    @app.get("/api/ordenes")
+    def api_ordenes(_user: str = Depends(_auth)) -> JSONResponse:
+        """Órdenes de levantamiento para gestión de campo."""
+
+        ot = _load_work_orders(cfg)
+        if ot.empty:
+            return JSONResponse({"error": "sin órdenes generadas"}, status_code=404)
+        return JSONResponse(json.loads(ot.to_json(orient="records")))
+
     @app.get("/api/ranking")
     def api_ranking(_user: str = Depends(_auth), top: int = 100) -> JSONResponse:
         df = _load_ranking(cfg)
@@ -120,7 +155,7 @@ def create_app(config_path: str = "config/base.yaml") -> FastAPI:
         df = _load_ranking(cfg)
         met = _load_metricas(cfg)
         bal = _load_balance(cfg)
-        return _render_html(cfg, df, met, user, bal)
+        return _render_html(cfg, df, met, user, bal, _load_work_orders(cfg), _load_plan(cfg))
 
     return app
 
@@ -145,7 +180,41 @@ def _balance_html(bal: dict) -> str:
  </div>"""
 
 
-def _render_html(cfg: AppConfig, df: pd.DataFrame, met: dict, user: str, bal: dict | None = None) -> str:
+def _ordenes_html(ot: pd.DataFrame, plan: dict) -> str:
+    """Bloque de focalización: dónde ir a hacer el levantamiento."""
+
+    if ot is None or ot.empty:
+        return ""
+    res = plan.get("resumen", {}) if plan else {}
+    filas = []
+    for _, r in ot.head(25).iterrows():
+        filas.append(
+            f"<tr><td>{_esc(r.get('orden_trabajo',''))}</td>"
+            f"<td>{_esc(r.get('nivel',''))}</td>"
+            f"<td>{_esc(r.get('entidad',''))}</td>"
+            f"<td>{_esc(r.get('accion',''))}</td>"
+            f"<td class='num'>{int(r.get('clientes_a_revisar',0) or 0)}</td>"
+            f"<td class='num'>{float(r.get('kwh_por_visita',0) or 0):,.0f}</td>"
+            f"<td>{_esc(str(r.get('motivo_principal',''))[:70])}</td></tr>"
+        )
+    cobertura = int(ot["clientes_a_revisar"].sum()) if "clientes_a_revisar" in ot else 0
+    energia = float(ot["kwh_por_visita"].sum()) if "kwh_por_visita" in ot else 0.0
+    return f"""
+ <h2 style="font-size:1rem;margin-top:28px">📍 Dónde inspeccionar — órdenes de levantamiento</h2>
+ <div class="cards">
+  <div class="card"><div class="v">{res.get('n_objetivos',0):,}</div><div class="l">Objetivos priorizados</div></div>
+  <div class="card"><div class="v">{len(ot):,}</div><div class="l">Órdenes de trabajo</div></div>
+  <div class="card"><div class="v">{cobertura:,}</div><div class="l">Clientes cubiertos</div></div>
+  <div class="card"><div class="v">{energia:,.0f}</div><div class="l">kWh/mes en juego</div></div>
+ </div>
+ <table><thead><tr><th>OT</th><th>Nivel</th><th>Entidad</th><th>Acción</th>
+   <th>Clientes</th><th>kWh/visita</th><th>Motivo</th></tr></thead>
+ <tbody>{''.join(filas)}</tbody></table>"""
+
+
+def _render_html(cfg: AppConfig, df: pd.DataFrame, met: dict, user: str,
+                 bal: dict | None = None, ot: pd.DataFrame | None = None,
+                 plan: dict | None = None) -> str:
     if df.empty:
         cuerpo = "<p>No hay resultados calculados todavía.</p>"
     else:
@@ -192,7 +261,8 @@ def _render_html(cfg: AppConfig, df: pd.DataFrame, met: dict, user: str, bal: di
   <div class="card"><div class="v">{met.get('n_meses','-')}</div><div class="l">Meses de consumo</div></div>
   <div class="card"><div class="v">{_fmt_pct(met.get('delta_p_total_pct'))}</div><div class="l">Δ Potencia SIG→corregido</div></div>
  </div>
- <h2 style="font-size:1rem">Top 100 clientes por sospecha de hurto</h2>
+ {_ordenes_html(ot if ot is not None else pd.DataFrame(), plan or {})}
+ <h2 style="font-size:1rem;margin-top:28px">Top 100 clientes por sospecha de hurto</h2>
  {cuerpo}
  {_balance_html(bal or {})}
  <p class="note">Vista de solo lectura · usuario: {_esc(user)} · método de promedio:

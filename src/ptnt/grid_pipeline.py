@@ -23,7 +23,7 @@ from ptnt.losses.montecarlo import montecarlo_losses, montecarlo_ntl
 from ptnt.losses.transformers import BankConfig, bank_capacity_kva, transformer_unit_loss_kwh
 from ptnt.powerflow.bfs import run_powerflow
 from ptnt.powerflow.bfs3ph import customer_loads_by_phase, run_powerflow_3ph
-from ptnt.ref.catalogs import load_conductor_catalog, load_transformer_catalog
+from ptnt.ref.catalogs import load_conductor_catalog_full, load_transformer_catalog
 from ptnt.topology.graph import NetworkModel, build_radial_graph
 
 
@@ -68,7 +68,7 @@ def run_grid_analysis(
     el mismo caso en OpenDSS y compara las pérdidas (si OpenDSSDirect está instalado).
     """
 
-    conductors = load_conductor_catalog(cfg.catalogos.conductores)
+    conductors = load_conductor_catalog_full(cfg.catalogos.conductores)
     tx_catalog = load_transformer_catalog(cfg.catalogos.transformadores)
     graph = build_radial_graph(model)
 

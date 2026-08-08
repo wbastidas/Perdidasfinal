@@ -211,6 +211,70 @@ class RadialGraph:
                 asignacion[c["customer_id"]] = site_id
         return asignacion
 
+    # -- descomposición en ramales (§E4.4) -----------------------------------
+    def branch_decomposition(self, min_nodes: int = 2) -> dict[str, set[str]]:
+        """Descompone la red en **ramales**.
+
+        Un ramal es el conjunto de nodos que cuelga de un punto de bifurcación de
+        **red** o de la fuente, hasta la siguiente bifurcación. Es la unidad
+        intermedia entre alimentador y puesto: la que una cuadrilla recorre como un
+        tramo de calle.
+
+        Criterio clave: una **acometida a un cliente no bifurca la red**. Solo
+        cuentan como bifurcación los nodos con ≥2 hijos que continúan el tendido
+        (hijos con descendencia propia). Si no fuera así, cada poste con un cliente
+        colgado partiría el ramal y la descomposición sería inútil.
+
+        Devuelve ``{branch_id: nodos}``; el ``branch_id`` es el nodo raíz del ramal.
+        """
+
+        def _continua_red(n: str) -> bool:
+            """El nodo continúa el tendido (no es una hoja/acometida)."""
+            return bool(self._children[n])
+
+        bifurcaciones = {self.source}
+        for n in self._order:
+            troncales = [h for h in self._children[n] if _continua_red(h)]
+            if len(troncales) >= 2:
+                bifurcaciones.add(n)
+
+        ramales: dict[str, set[str]] = {}
+        for raiz in bifurcaciones:
+            for hijo in self._children[raiz]:
+                # recorre el hijo hasta encontrar otra bifurcación (excluida)
+                nodos: set[str] = set()
+                q = deque([hijo])
+                while q:
+                    n = q.popleft()
+                    nodos.add(n)
+                    if n in bifurcaciones:
+                        continue  # el ramal termina aquí; sus hijos son otro ramal
+                    q.extend(self._children[n])
+                if len(nodos) >= min_nodes or not self._children[hijo]:
+                    ramales[hijo] = nodos
+        return ramales
+
+    def branch_of_node(self, ramales: dict[str, set[str]]) -> dict[str, str]:
+        """Mapa inverso ``nodo -> branch_id`` a partir de la descomposición."""
+
+        out: dict[str, str] = {}
+        for bid, nodos in ramales.items():
+            for n in nodos:
+                out.setdefault(n, bid)
+        return out
+
+    def total_length_km(self, nodos: set[str] | None = None) -> float:
+        """Longitud de red (km) de los tramos cuyo nodo destino está en ``nodos``."""
+
+        if nodos is None:
+            return sum(e.length_km for e in self.model.edges)
+        total = 0.0
+        for n in nodos:
+            e = self._parent_edge.get(n)
+            if e is not None:
+                total += e.length_km
+        return total
+
     # -- zonas de protección (§10.5) -----------------------------------------
     def protection_zones(self, switch_nodes: set[str]) -> dict[str, set[str]]:
         """Árbol de zonas: elementos entre un dispositivo de maniobra y el

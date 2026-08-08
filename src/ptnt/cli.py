@@ -301,6 +301,161 @@ def analizar_red(
 
 
 @app.command()
+def focalizar(
+    csv: str = typer.Option(None, "--csv", help="CSV comercial (para el ranking de clientes)"),
+    n_trafos: int = typer.Option(8, "--trafos", help="Nº de transformadores (red sintética)"),
+    clientes_por_trafo: int = typer.Option(20, "--clientes-trafo"),
+    top: int = typer.Option(15, "--top", help="Objetivos a mostrar por nivel"),
+    ordenes: int = typer.Option(25, "--ordenes", help="Nº de órdenes de levantamiento"),
+    config: str = _CONFIG_OPT,
+):
+    """**Dónde ir a hacer el levantamiento**: focalización por alimentador, zona,
+    ramal, transformador, sector y cliente, con órdenes de trabajo priorizadas."""
+
+    from pathlib import Path as _Path
+
+    from ptnt.grid_pipeline import run_grid_analysis
+    from ptnt.survey.collect import (
+        collect_branch_stats,
+        collect_transformer_stats,
+        collect_zone_stats,
+    )
+    from ptnt.survey.report import write_survey_report
+    from ptnt.survey.targeting import TargetLevel, build_survey_plan
+    from ptnt.synth.network import generate_radial_network
+    from ptnt.topology.graph import build_radial_graph
+
+    cfg = _cargar(config)
+
+    # 1) Red + balance (alimentador, zonas, ramales, transformadores)
+    net = generate_radial_network(
+        n_transformers=n_trafos, customers_per_tx=clientes_por_trafo
+    )
+    grid = run_grid_analysis(net.model, cfg, head_energy_kwh=net.head_energy_kwh)
+    graph = build_radial_graph(net.model)
+
+    # 2) Ranking de clientes (si hay CSV comercial)
+    ranking = None
+    coords = None
+    suspect: set[str] = set()
+    recuperable: dict[str, float] = {}
+    if csv is None:
+        try:
+            csv = cfg.fuente("comercial_csv").ruta
+        except KeyError:
+            csv = None
+    if csv and _Path(csv).exists():
+        from ptnt.pipeline import run_analysis
+        from ptnt.survey.collect import bind_commercial_customers
+
+        com = run_analysis(cfg, csv, persistir=False)
+        ranking = com.ranking
+        # Vincula las cuentas contrato a los nodos de cliente de la red, para que
+        # las señales de comportamiento agreguen a ramal, puesto y sector.
+        coords_bind = None
+        if {"x", "y"}.issubset(com.clientes.columns):
+            coords_bind = com.clientes[["contract_account", "x", "y"]].copy()
+            coords_bind["contract_account"] = coords_bind["contract_account"].astype(str)
+        # Orden estable por cuenta (NO por score): vincular por score sesgaría la
+        # red concentrando artificialmente los sospechosos en los primeros nodos.
+        cuentas = sorted(ranking["contract_account"].astype(str).tolist())
+        bind_commercial_customers(net.model, cuentas, coords_bind)
+        graph = build_radial_graph(net.model)
+        umbral = ranking["score"].quantile(0.95) if not ranking.empty else 1.0
+        sos = ranking[ranking["score"] >= umbral]
+        suspect = set(sos["contract_account"].astype(str))
+        recuperable = dict(
+            zip(ranking["contract_account"].astype(str), ranking["recuperable_kwh_mes"])
+        )
+        if {"x", "y"}.issubset(com.clientes.columns):
+            coords = com.clientes[["contract_account", "x", "y"]].copy()
+            coords["contract_account"] = coords["contract_account"].astype(str)
+    else:
+        console.print("[yellow]Sin CSV comercial: se focaliza solo con datos de red.[/]")
+
+    # 3) Estadísticas por nivel
+    b = grid.balance
+    feeder_balances = [{
+        "feeder_code": grid.feeder_code, "ntl_kwh": b.ntl_kwh, "ntl_pct": b.ntl_pct,
+        "customers": sum(len(v) for v in net.model.customer_nodes.values()),
+        "network_km": graph.total_length_km(), "confidence": 100.0,
+        "balance_type": b.balance_type.value,
+    }]
+    branch_stats = collect_branch_stats(
+        graph, suspect_customers=suspect, recoverable_by_customer=recuperable
+    )
+    transformer_stats = collect_transformer_stats(
+        graph, grid.lv_zones, grid.transformer_loading,
+        suspect_customers=suspect, recoverable_by_customer=recuperable,
+    )
+    zone_stats = collect_zone_stats(graph)
+
+    # 4) Plan de levantamientos
+    plan = build_survey_plan(
+        feeder_balances=feeder_balances, zone_signals=zone_stats,
+        branch_stats=branch_stats, transformer_stats=transformer_stats,
+        customer_ranking=ranking, customer_coords=coords,
+    )
+
+    # 5) Mostrar
+    console.print(f"\n[bold]📍 Plan de levantamientos[/] — "
+                  f"{plan.resumen['n_objetivos']} objetivos priorizados")
+    conteo = ", ".join(f"{k.replace('_',' ').title()}: {v}"
+                       for k, v in plan.resumen["por_nivel"].items() if v)
+    console.print(f"  Por nivel: {conteo}")
+
+    for lvl in (TargetLevel.ALIMENTADOR, TargetLevel.ZONA_PROTECCION, TargetLevel.RAMAL,
+                TargetLevel.PUESTO_TRANSFORMACION, TargetLevel.SECTOR):
+        objetivos = plan.by_level(lvl)
+        if not objetivos:
+            continue
+        tabla = Table(title=f"{lvl.value.replace('_',' ').title()} — dónde inspeccionar")
+        tabla.add_column("#", justify="right")
+        tabla.add_column("Entidad")
+        tabla.add_column("Prior.", justify="right")
+        tabla.add_column("kWh/mes", justify="right")
+        tabla.add_column("Clientes", justify="right")
+        tabla.add_column("Motivo principal")
+        for i, t in enumerate(objetivos[:top], start=1):
+            tabla.add_row(str(i), t.entity_id, f"{t.priority_score:.3f}",
+                          f"{t.recoverable_kwh_month:,.0f}", str(t.customers_count),
+                          (t.reasons[0][:60] if t.reasons else "-"))
+        console.print(tabla)
+
+    # 6) Exportar (visible y reportable)
+    salidas = _Path(cfg.rutas.salidas)
+    salidas.mkdir(parents=True, exist_ok=True)
+    df_plan = plan.to_dataframe()
+    df_ot = plan.work_orders(top_n=ordenes)
+    df_plan.to_csv(salidas / "plan_levantamientos.csv", index=False)
+    df_ot.to_csv(salidas / "ordenes_levantamiento.csv", index=False)
+    try:
+        from ptnt.io.exporters import export_tables_xlsx
+
+        export_tables_xlsx(
+            {"Plan": df_plan, "Ordenes": df_ot,
+             **{f"N_{l.value[:12]}": plan.to_dataframe(l)
+                for l in TargetLevel if plan.by_level(l)}},
+            str(salidas / "focalizacion.xlsx"),
+        )
+    except Exception as exc:  # pragma: no cover
+        console.print(f"[yellow]XLSX no generado ({exc}); CSV disponible.[/]")
+    write_survey_report(plan, str(salidas / "reporte_focalizacion.html"))
+    import json as _json
+
+    (salidas / "plan_levantamientos.json").write_text(
+        _json.dumps({"resumen": plan.resumen,
+                     "objetivos": _json.loads(df_plan.to_json(orient="records"))},
+                    ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    console.print(f"\n[bold]Órdenes de levantamiento generadas:[/] {len(df_ot)}")
+    console.print(f"[green]✓[/] {salidas}/reporte_focalizacion.html · "
+                  f"focalizacion.xlsx · plan_levantamientos.csv · ordenes_levantamiento.csv")
+
+
+@app.command()
 def validar_flujo(
     tolerancia_pct: float = typer.Option(2.0, "--tol"),
     config: str = _CONFIG_OPT,

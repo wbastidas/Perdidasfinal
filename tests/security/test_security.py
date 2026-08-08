@@ -166,3 +166,30 @@ def test_no_hay_eval_ni_shell_injection_en_fuentes():
     src = inspect.getsource(sql_source)
     # la contraseña se pasa a URL.create, no se interpola en una f-string de conexión
     assert "URL.create" in src
+
+
+@pytest.mark.security
+def test_endpoints_focalizacion_requieren_autenticacion(tmp_path):
+    """Los objetivos de levantamiento identifican predios concretos: el visor no
+    debe exponerlos sin credenciales."""
+
+    pytest.importorskip("fastapi")
+    import yaml
+    from fastapi.testclient import TestClient
+
+    from ptnt.security.auth import UserStore
+    from ptnt.webviewer.app import create_app
+
+    users_path = tmp_path / "u.json"
+    UserStore(users_path).add_user("visor", "ClaveVisor123", "viewer")
+    data = yaml.safe_load(Path("config/base.yaml").read_text(encoding="utf-8"))
+    data["seguridad"]["ruta_usuarios"] = str(users_path)
+    cfg_path = tmp_path / "cfg.yaml"
+    cfg_path.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    client = TestClient(create_app(str(cfg_path)))
+    for endpoint in ("/api/focalizacion", "/api/ordenes"):
+        assert client.get(endpoint).status_code == 401, endpoint
+        assert client.get(endpoint, auth=("visor", "mala")).status_code == 401, endpoint
+        # con credenciales válidas: 200 (hay datos) o 404 (aún sin calcular)
+        assert client.get(endpoint, auth=("visor", "ClaveVisor123")).status_code in (200, 404)

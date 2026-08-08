@@ -87,26 +87,42 @@ def generate_radial_network(
             n_phases=3, voltage_v=lv_voltage_v, is_lv=True,
         ))
 
-        # clientes colgando de ramales BT
+        # Clientes distribuidos a lo largo de tendidos BT (calles), no en estrella:
+        # cada puesto alimenta 2 ramales BT y los clientes cuelgan a lo largo de
+        # ellos, que es como se recorre una red real y como se define un ramal.
         clientes = []
         n_cli = customers_per_tx
-        for c in range(n_cli):
-            cust_node = f"C{t}_{c}"
-            edges.append(Edge(
-                segment_id=f"segBT{t}_{c}", from_node=lv_bus, to_node=cust_node,
-                conductor_code=lv_conductor, length_km=float(rng.uniform(0.01, 0.05)),
-                n_phases=1, voltage_v=lv_voltage_v, is_lv=True,
-            ))
-            energia = float(rng.uniform(80, 400))
-            billed_total += energia
-            clientes.append({
-                "customer_id": f"{feeder_code}-{t}-{c}",
-                "energy_kwh": energia,
-                "phase": int(rng.integers(1, 4)),
-                "tariff": "BT Residencial",
-                "meter_type": "Electrónico",
-            })
-            customer_nodes[cust_node] = [clientes[-1]]
+        n_ramales = 2
+        por_ramal = max(1, n_cli // n_ramales)
+        for ram in range(n_ramales):
+            nodo_previo = lv_bus
+            for j in range(por_ramal):
+                idx = ram * por_ramal + j
+                if idx >= n_cli:
+                    break
+                poste = f"BT{t}_{ram}_{j}"          # poste del tendido BT
+                edges.append(Edge(
+                    segment_id=f"segBT{t}_{ram}_{j}", from_node=nodo_previo, to_node=poste,
+                    conductor_code=lv_conductor, length_km=float(rng.uniform(0.03, 0.06)),
+                    n_phases=3, voltage_v=lv_voltage_v, is_lv=True,
+                ))
+                nodo_previo = poste
+                cust_node = f"C{t}_{idx}"
+                edges.append(Edge(                   # acometida del cliente
+                    segment_id=f"segAC{t}_{idx}", from_node=poste, to_node=cust_node,
+                    conductor_code=lv_conductor, length_km=float(rng.uniform(0.005, 0.02)),
+                    n_phases=1, voltage_v=lv_voltage_v, is_lv=True,
+                ))
+                energia = float(rng.uniform(80, 400))
+                billed_total += energia
+                clientes.append({
+                    "customer_id": f"{feeder_code}-{t}-{idx}",
+                    "energy_kwh": energia,
+                    "phase": int(rng.integers(1, 4)),
+                    "tariff": "BT Residencial",
+                    "meter_type": "Electrónico",
+                })
+                customer_nodes[cust_node] = [clientes[-1]]
 
         # un par de luminarias por puesto
         streetlight_nodes[lv_bus] = [

@@ -156,10 +156,69 @@ def main() -> None:
         f"Método de demanda: **{met.get('metodo_demanda','-')}**"
     )
 
-    tab1, tab2, tab3, tab4 = st.tabs(
-        ["🎯 Sospecha de hurto", "🔌 Reconciliación de potencia",
-         "📈 Cliente", "⚖️ Balance de red"]
+    tab0, tab1, tab2, tab3, tab4 = st.tabs(
+        ["📍 Dónde inspeccionar", "🎯 Sospecha de hurto",
+         "🔌 Reconciliación de potencia", "📈 Cliente", "⚖️ Balance de red"]
     )
+
+    # -- V7: focalización de levantamientos (§11.5) --------------------------
+    with tab0:
+        st.subheader("Plan de levantamientos: dónde ir a inspeccionar")
+        plan_path = Path(cfg.rutas.salidas) / "plan_levantamientos.json"
+        ot_path = Path(cfg.rutas.salidas) / "ordenes_levantamiento.csv"
+        if not plan_path.exists():
+            st.info("Sin plan de focalización. Ejecute: `ptnt focalizar`.")
+        else:
+            plan = json.loads(plan_path.read_text(encoding="utf-8"))
+            res = plan.get("resumen", {})
+            objetivos = pd.DataFrame(plan.get("objetivos", []))
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Objetivos priorizados", f"{res.get('n_objetivos', 0):,}")
+            c2.metric("kWh/mes recuperables", f"{res.get('recuperable_total_kwh_mes', 0):,.0f}")
+            c3.metric("Problema de datos", f"{res.get('objetivos_con_problema_datos', 0):,}",
+                      help="Score alto en zona de baja confiabilidad: corregir datos antes de inspeccionar")
+            if ot_path.exists():
+                ot = pd.read_csv(ot_path)
+                c4.metric("Órdenes de trabajo", f"{len(ot):,}")
+            else:
+                ot = pd.DataFrame()
+
+            if not ot.empty:
+                st.markdown("#### 📋 Órdenes de levantamiento (por rendimiento por visita)")
+                st.caption(
+                    f"{int(ot['clientes_a_revisar'].sum()):,} clientes cubiertos en "
+                    f"{len(ot)} visitas · {ot['kwh_por_visita'].sum():,.0f} kWh/mes en juego"
+                )
+                st.dataframe(
+                    ot[[c for c in ["orden_trabajo", "nivel", "entidad", "accion",
+                                    "clientes_a_revisar", "kwh_por_visita",
+                                    "motivo_principal"] if c in ot.columns]],
+                    use_container_width=True, hide_index=True,
+                )
+                st.download_button("Descargar órdenes (CSV)",
+                                   ot.to_csv(index=False).encode("utf-8"),
+                                   "ordenes_levantamiento.csv", "text/csv")
+
+            if not objetivos.empty:
+                st.markdown("#### Objetivos por nivel")
+                niveles = objetivos["nivel"].unique().tolist()
+                sel = st.selectbox("Nivel de focalización", niveles)
+                sub = objetivos[objetivos["nivel"] == sel].head(100)
+                st.dataframe(
+                    sub[[c for c in ["orden", "entidad", "alimentador", "prioridad",
+                                     "recuperable_kwh_mes", "clientes", "red_km",
+                                     "accion", "razon_1"] if c in sub.columns]],
+                    use_container_width=True, hide_index=True,
+                )
+                # Mapa de los objetivos con coordenadas
+                geo = sub.dropna(subset=["x", "y"]) if {"x", "y"}.issubset(sub.columns) else pd.DataFrame()
+                if not geo.empty:
+                    st.markdown("#### Ubicación de los objetivos")
+                    st.map(pd.DataFrame({"lat": geo["y"] / 1e5, "lon": geo["x"] / 1e5}),
+                           size=20)
+                    st.caption("Coordenadas UTM 17S normalizadas para vista rápida; "
+                               "el export lleva las coordenadas reales.")
 
     # -- V7: sectores de sospecha -------------------------------------------
     with tab1:

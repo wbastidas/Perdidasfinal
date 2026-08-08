@@ -11,7 +11,12 @@ from ptnt.ref.catalogs import (
     TransformerCatalog,
     TransformerSpec,
     load_conductor_catalog,
+    load_conductor_catalog_full,
     load_transformer_catalog,
+)
+from ptnt.ref.conductor_derive import (
+    derive_conductor,
+    derive_from_structure_catalog,
 )
 from ptnt.ref.structure_catalog import (
     ElementCategory,
@@ -25,6 +30,7 @@ __all__ = [
     "Conductor",
     "ConductorCatalog",
     "load_conductor_catalog",
+    "load_conductor_catalog_full",
     "TransformerSpec",
     "TransformerCatalog",
     "load_transformer_catalog",
@@ -33,4 +39,6 @@ __all__ = [
     "ElementCategory",
     "classify_structure",
     "load_structure_catalog",
+    "derive_conductor",
+    "derive_from_structure_catalog",
 ]

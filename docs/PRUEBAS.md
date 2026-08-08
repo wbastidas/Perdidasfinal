@@ -25,6 +25,7 @@ pytest --cov=ptnt --cov-report=term-missing   # con cobertura
 | `test_risk.py` | Agregación multinivel del riesgo, penalización por baja confiabilidad, inferencia de configuración de banco |
 | `test_advanced.py` | Monte Carlo (percentiles ordenados), **validación del flujo** (<2% error, incl. OpenDSS si está), motor de reglas (detecta R05/R11/R12/R22/R24/R15; red limpia sin hallazgos), exportador OpenDSS, señales de red N1/N3/N4, reporte ejecutivo HTML |
 | `test_3ph_migration.py` | Decodificadores (fase bitmask, kVA, cascada de longitud), **motor trifásico con neutro** (balanceado→neutro 0, desbalanceado→neutro y pérdida; 3φ≈1φ balanceado), **migración de datos** round-trip y desde DuckDB |
+| `test_survey.py` | **Derivación de impedancias** (AWG/kcmil, R vs fabricante <3%, cobertura 415/415, kcmil mal etiquetado), **focalización** (ramales ignoran acometidas, todos los niveles, ramal sin señales no prioritario, baja confiabilidad = problema de datos, sectores por cercanía, órdenes por rendimiento por visita, exportable/reportable) |
 | `test_catalog_lv.py` | **Catálogo CATALOGOESTRUCTURA** (clasificación por prefijo, kVA/banco, balastro AP, kVAR, doble nivel), **agregación LV al transformador** sin doble conteo en tronco, **totalizador** (no re-suma individuales), **semáforos/cámaras** como AP no medido, balastro desde catálogo |
 
 **Propiedades verificadas (hypothesis):**
@@ -43,6 +44,11 @@ pytest --cov=ptnt --cov-report=term-missing   # con cobertura
   crean correctamente.
 - **Reconciliación:** produce una corrección de potencia medible (el SIG usaba el
   último mes; el sistema, el promedio multi-mes).
+
+`test_survey_e2e.py` valida el **requerimiento general** de punta a punta: el plan
+cubre todos los niveles, cada objetivo es accionable (acción + motivo), las órdenes
+agrupan clientes por visita y ordenan por rendimiento, y el resultado es exportable
+(CSV/XLSX) y reportable (HTML).
 
 `test_grid_pipeline.py` ejecuta el pipeline **de red** (E4–E10) sobre la red radial
 sintética y verifica:
@@ -73,7 +79,7 @@ sintética y verifica:
 ## Estado actual
 
 ```
-141 passed
+172 passed
 ```
 
 Cobertura del núcleo de dominio (objetivo de la especificación ≥ 85 %):

@@ -25,12 +25,16 @@ datos de la red (esquema **Puesto → Unidad** homologado CNEL EP):
    señales de comportamiento sobre la serie de 36 meses (S1–S10), grupos par por
    **CLIRLSCOD**, detección no supervisada y un ranking de consenso con la
    energía recuperable estimada y las razones en lenguaje operativo.
-6. **Publica los resultados en dos interfaces web**: un tablero de análisis para
+6. **Dice dónde ir a hacer el levantamiento**: rankings por alimentador, zona,
+   ramal, transformador, **sector geográfico** y cliente, con órdenes de trabajo
+   priorizadas por rendimiento por visita, exportables y reportables.
+7. **Publica los resultados en dos interfaces web**: un tablero de análisis para
    escritorio (Streamlit) y un visor de solo lectura (FastAPI) para consulta por
    terceros.
 
 > Documentación completa en [`docs/`](docs/): [Arquitectura](docs/ARQUITECTURA.md) ·
 > [Instalación en Windows](docs/INSTALACION_WINDOWS.md) ·
+> [Focalización de levantamientos](docs/FOCALIZACION.md) ·
 > [Proceso](docs/PROCESO.md) · [Seguridad](docs/SEGURIDAD.md) ·
 > [Pruebas](docs/PRUEBAS.md).
 
@@ -68,6 +72,7 @@ ptnt servir-visor       # visor de solo lectura  -> http://127.0.0.1:8080
 | `ptnt analizar` | Pipeline comercial: promedio → potencia → reconciliación → hurto |
 | `ptnt migrar` | Migra la red desde la base de origen (FGDB/SQL/DuckDB) al modelo canónico |
 | `ptnt analizar-red` | Pipeline de red: topología → flujo (1φ o **3φ desbalanceado con neutro**) → pérdidas (Monte Carlo P10/P50/P90) → balance y PNT; opción `--trifasico` y `--opendss`; genera reporte ejecutivo HTML, `.dss` y reglas de calidad |
+| `ptnt focalizar` | **Dónde ir a hacer el levantamiento**: rankings por alimentador/zona/ramal/transformador/sector/cliente + órdenes de trabajo, XLSX y reporte HTML |
 | `ptnt validar-flujo` | Valida el flujo contra casos analíticos y contra **OpenDSS** (si está instalado) |
 | `ptnt dashboard` | Tablero de análisis (Streamlit) |
 | `ptnt servir-visor` | Visor web de solo lectura (FastAPI) |
@@ -116,6 +121,7 @@ src/ptnt/
 ├── lighting/     # alumbrado público (E7)
 ├── balance/      # balance jerárquico y PNT + controles C01-C06 (E9)
 ├── grid/         # cargabilidad, desbalance, riesgo multinivel, agregación LV al trafo (E10)
+├── survey/       # focalización: dónde inspeccionar + sectores + órdenes + reporte (§11.5)
 ├── quality/      # reconciliación (§6.1) + motor de reglas R05/R09/R11/R12/R15/R22/R24/P01/P09 (E5)
 ├── store/        # DuckDB (schema.sql) + persistencia
 ├── io/migration.py  # migración origen → modelo canónico (§4.3, round-trip)
