@@ -61,8 +61,9 @@ ptnt servir-visor       # visor de solo lectura  -> http://127.0.0.1:8080
 | `ptnt probar-fuentes` | Prueba la conectividad de todas las bases de origen |
 | `ptnt generar-sinteticos` | Genera un CSV comercial sintético con hurtos conocidos |
 | `ptnt analizar` | Pipeline comercial: promedio → potencia → reconciliación → hurto |
-| `ptnt analizar-red` | Pipeline de red: topología → flujo → pérdidas (con Monte Carlo P10/P50/P90) → balance y PNT; genera reporte ejecutivo HTML, `.dss` OpenDSS y reglas de calidad |
-| `ptnt validar-flujo` | Valida el motor de flujo contra casos radiales de solución analítica |
+| `ptnt migrar` | Migra la red desde la base de origen (FGDB/SQL/DuckDB) al modelo canónico |
+| `ptnt analizar-red` | Pipeline de red: topología → flujo (1φ o **3φ desbalanceado con neutro**) → pérdidas (Monte Carlo P10/P50/P90) → balance y PNT; opción `--trifasico` y `--opendss`; genera reporte ejecutivo HTML, `.dss` y reglas de calidad |
+| `ptnt validar-flujo` | Valida el flujo contra casos analíticos y contra **OpenDSS** (si está instalado) |
 | `ptnt dashboard` | Tablero de análisis (Streamlit) |
 | `ptnt servir-visor` | Visor web de solo lectura (FastAPI) |
 | `ptnt crear-usuario` | Alta de usuario para las interfaces (solo hash) |
@@ -101,15 +102,17 @@ src/ptnt/
 ├── ntl/
 │   ├── signals.py             # señales S1–S10 de hurto
 │   └── scoring.py             # consenso + ranking
+├── canonical/    # decodificadores de dominio (fase bitmask, kVA) + field_map (§4)
 ├── ref/          # catálogos: conductores, transformadores
 ├── topology/     # grafo radial + trazas + zonas (E4)
-├── powerflow/    # flujo BFS + exportador OpenDSS + validación (E8.1)
+├── powerflow/    # flujo BFS 1φ + 3φ con neutro + OpenDSS (export/run) + validación (E8.1)
 ├── losses/       # pérdidas técnicas + Monte Carlo P10/P50/P90 (E8)
 ├── lighting/     # alumbrado público (E7)
 ├── balance/      # balance jerárquico y PNT + controles C01-C06 (E9)
 ├── grid/         # cargabilidad, desbalance de fases, riesgo multinivel (E10)
 ├── quality/      # reconciliación (§6.1) + motor de reglas R05/R09/R11/R12/R15/R22/R24/P01/P09 (E5)
 ├── store/        # DuckDB (schema.sql) + persistencia
+├── io/migration.py  # migración origen → modelo canónico (§4.3, round-trip)
 ├── security/     # auth (hash), secretos por entorno
 ├── synth/        # generador de datos (comercial + red radial) con hurtos
 ├── dashboard/    # tablero Streamlit (escritorio)
@@ -144,11 +147,15 @@ por configuración, medidores), alumbrado público con exclusión por medición,
 balance jerárquico MEDIDO/INDICATIVO con controles C01–C06, cargabilidad y
 desbalance de fases (`ptnt analizar-red`).
 
-Incluye además: **Monte Carlo** de pérdidas y PNT (bandas P10/P50/P90),
-**motor de reglas de calidad** de datos (§E5), **exportador OpenDSS** (`.dss`),
-**validación del flujo** contra casos radiales de solución analítica cerrada,
-**señales de red** N1/N3/N4, y **exportadores** (XLSX/CSV y reporte ejecutivo HTML).
+Incluye además: **motor trifásico desbalanceado con neutro** (corriente y pérdida
+de neutro, desbalance), **migración de datos** origen → modelo canónico (§4.3),
+**Monte Carlo** de pérdidas y PNT (P10/P50/P90), **motor de reglas de calidad**
+(§E5), **exportador y ejecución OpenDSS** con comparación de pérdidas de línea
+(validado a ~0% en caso MT controlado), **validación del flujo** contra casos
+analíticos, **señales de red** N1/N3/N4, y **exportadores** (XLSX/CSV + reporte
+ejecutivo HTML).
 
-Queda como evolución del motor: flujo **trifásico desbalanceado con neutro
-explícito** y la validación IEEE 13/34/123 completa (requiere ese motor). El
-esquema de base de datos (`src/ptnt/store/schema.sql`) ya soporta estos resultados.
+Queda como evolución del motor: modelar el **salto de tensión del transformador**
+(MT→BT) dentro del barrido para la comparación OpenDSS por alimentador completo, y
+la reproducción **IEEE 13/34/123** completa. El esquema de BD ya soporta los
+resultados.

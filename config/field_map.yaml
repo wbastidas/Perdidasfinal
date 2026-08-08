@@ -1,0 +1,64 @@
+# =============================================================================
+# Mapeo de campos FGDB → canónico (§4.3). Única fuente de verdad de la traducción.
+# La capa de migración lee las tablas de origen (FGDB exportado a SQL/CSV/Parquet)
+# con estos nombres y produce el modelo canónico NetworkModel.
+#
+# Las tablas de origen se declaran en la sección 'migracion' de config/base.yaml
+# (nombres de tabla y de columnas por entidad), de modo que distintas bases de
+# origen se acomoden sin tocar el código.
+# =============================================================================
+
+# --- Tramos (todas las variantes Tramo*) ---
+segment:
+  segment_id: GLOBALID
+  from_node: FROMNODE            # derivado de geometría en producción
+  to_node: TONODE
+  feeder_code: ALIMENTADORID
+  phase_designation: FASECONEXION      # bitmask A=4,B=2,C=1
+  voltage_v: VOLTAJE
+  conductor_phase_code: CODIGOCONDUCTORFASE
+  conductor_neutral_code: CODIGOCONDUCTORNEUTRO
+  length_field: LONGITUDCAMPO
+  length_system: LONGITUDSISTEMA
+  length_shape: SHAPE_Length
+  non_traceable: FDRMGRNONTRACEABLE
+
+# --- Puesto de transformación (PuestoTransfDistribucion) ---
+transformer_site:
+  site_id: GLOBALID
+  site_code: CODIGOPUESTO
+  feeder_code: ALIMENTADORID
+  kva_site: POTENCIAKVA
+  is_metered: MEDIDO
+  declared_loading_pct: CARGABILIDAD
+
+# --- Unidad de transformador (UNIDADTRANSFDISTRIBUCION) ---
+transformer_unit:
+  unit_id: GLOBALID
+  site_id: PUESTOTRANSFDISTGLOBALID
+  kva_unit: POTENCIANOMINAL           # String -> parse
+  phase_designation: FASECONEXION
+  structure_code: CODIGOESTRUCTURA     # codifica configuración de banco
+
+# --- Punto de carga y clientes ---
+customer:
+  customer_site_id: GLOBALID           # PuntoCarga
+  site_transformer_id: PUESTOTRANSFDISTGLOBALID
+  customer_unit_id: GLOBALID           # CONEXIONCONSUMIDOR
+  unique_code: CODIGOUNICO
+  contract_account: CUENTACONTRATO     # ATRIBUTOSCONSUMIDOR (join CSV)
+  lv_phase_sequence: SECUENCIAFASE
+  phases_count: CDAFAS
+  tariff_type: TIPOTARIFA
+  reading_group: CLIRLSCOD             # grupo de ruta de lectura (grupo par)
+  active_power_kw: POTENCIAACTIVA
+  reactive_power_kvar: POTENCIAREACTIVA
+  last_month_kwh: CLIULTCONM
+
+# --- Cabecera (CIRCUITOFUENTE) ---
+feeder_head:
+  feeder_code: CODIGOALIMENTADOR
+  feeder_type: TIPOALIMENTADOR
+  max_demand_kw: DEMANDAMAXIMA
+  load_factor: FACTORDECARGA
+  loss_factor: FACTORDEPERDIDA

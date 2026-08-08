@@ -289,6 +289,27 @@ class RutasConfig(_Strict):
 
 
 # ---------------------------------------------------------------------------
+# Migración de datos (origen → canónico)
+# ---------------------------------------------------------------------------
+class MigracionConfig(_Strict):
+    """Declara de qué fuente y tablas se migra la red al modelo canónico.
+
+    ``fuente`` es el nombre de una fuente definida en ``fuentes``. Las tablas y
+    columnas son configurables para acomodar distintas bases de origen sin tocar
+    el código; los valores por defecto corresponden al esquema canónico interno
+    (el mismo que produce la exportación de una red).
+    """
+
+    fuente: str = "resultados_local"
+    field_map: str = "config/field_map.yaml"
+    tabla_segmentos: str = "silver.segments"
+    tabla_puestos: str = "silver.transformer_sites"
+    tabla_clientes: str = "silver.customer_nodes"
+    tabla_luminarias: str = "silver.streetlights"
+    tolerancia_longitud_pct: float = 30.0
+
+
+# ---------------------------------------------------------------------------
 # Catálogos (conductores y transformadores)
 # ---------------------------------------------------------------------------
 class CatalogosConfig(_Strict):
@@ -401,6 +422,7 @@ class AppConfig(_Strict):
     proyecto: ProyectoConfig
     rutas: RutasConfig = Field(default_factory=RutasConfig)
     fuentes: list[FuenteConfig] = Field(default_factory=list)
+    migracion: MigracionConfig = Field(default_factory=MigracionConfig)
     comercial: ComercialConfig
     promedio: AveragingConfig = Field(default_factory=AveragingConfig)
     carga: LoadConfig

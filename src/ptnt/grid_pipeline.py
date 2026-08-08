@@ -23,6 +23,7 @@ from ptnt.losses.meters import meter_losses_kwh
 from ptnt.losses.montecarlo import montecarlo_losses, montecarlo_ntl
 from ptnt.losses.transformers import BankConfig, bank_capacity_kva, transformer_unit_loss_kwh
 from ptnt.powerflow.bfs import run_powerflow
+from ptnt.powerflow.bfs3ph import customer_loads_by_phase, run_powerflow_3ph
 from ptnt.ref.catalogs import load_conductor_catalog, load_transformer_catalog
 from ptnt.topology.graph import NetworkModel, build_radial_graph
 
@@ -36,6 +37,10 @@ class GridResult:
     powerflow_converged: bool
     v_min_pu: float
     hours_period: float
+    loss_neutral_kwh: float = 0.0
+    imbalance_pct_max: float = 0.0
+    engine: str = "1F_equivalente"
+    opendss_comparison: dict = field(default_factory=dict)
     loss_technical_p10: float = 0.0
     loss_technical_p50: float = 0.0
     loss_technical_p90: float = 0.0
@@ -51,8 +56,15 @@ def run_grid_analysis(
     *,
     head_energy_kwh: float | None = None,
     hours_period: float = 720.0,
+    trifasico: bool = False,
+    comparar_opendss: bool = False,
 ) -> GridResult:
-    """Ejecuta el pipeline de red para un alimentador."""
+    """Ejecuta el pipeline de red para un alimentador.
+
+    ``trifasico=True`` usa el motor trifásico desbalanceado con neutro (reporta la
+    corriente/pérdida de neutro y el desbalance). ``comparar_opendss=True`` ejecuta
+    el mismo caso en OpenDSS y compara las pérdidas (si OpenDSSDirect está instalado).
+    """
 
     conductors = load_conductor_catalog(cfg.catalogos.conductores)
     tx_catalog = load_transformer_catalog(cfg.catalogos.transformadores)
@@ -75,17 +87,71 @@ def run_grid_analysis(
         node_load_kw[node] = p
         node_pf[node] = clase0.cos_phi
 
-    # --- flujo de potencia ---
-    logger.info("Flujo de potencia ({} nodos)", graph.n_nodes)
-    pf = run_powerflow(
-        graph, node_load_kw, node_pf, conductors, cfg.flujo,
-        t_op=cfg.perdidas.temperatura_operacion_c,
-        alpha=cfg.perdidas.alpha_aluminio,
-        t_ref=cfg.perdidas.temperatura_referencia_c,
-    )
+    # --- flujo de potencia (monofásico equivalente o trifásico con neutro) ---
+    loss_neutral_kwh = 0.0
+    imbalance_pct_max = 0.0
+    if trifasico:
+        logger.info("Flujo trifásico desbalanceado con neutro ({} nodos)", graph.n_nodes)
+        clase0 = next(iter(cfg.carga.clases.values()))
+        loads_ph = customer_loads_by_phase(
+            graph, lambda e: float(velander_max_demand(e, clase0.a, clase0.b))
+        )
+        pf3 = run_powerflow_3ph(
+            graph, loads_ph, node_pf, conductors, cfg.flujo,
+            t_op=cfg.perdidas.temperatura_operacion_c,
+            alpha=cfg.perdidas.alpha_aluminio,
+            t_ref=cfg.perdidas.temperatura_referencia_c,
+        )
+        loss_peak_kw = pf3.loss_kw_peak
+        v_min_pu = pf3.v_min_pu
+        converged = pf3.converged
+        iterations = pf3.iterations
+        loss_neutral_kwh = segment_loss_kwh(pf3.loss_neutral_kw, hours_period, fp)
+        imbalance_pct_max = pf3.imbalance_pct_max
+        engine = "3F_desbalanceado_neutro"
+    else:
+        logger.info("Flujo de potencia 1F equivalente ({} nodos)", graph.n_nodes)
+        pf = run_powerflow(
+            graph, node_load_kw, node_pf, conductors, cfg.flujo,
+            t_op=cfg.perdidas.temperatura_operacion_c,
+            alpha=cfg.perdidas.alpha_aluminio,
+            t_ref=cfg.perdidas.temperatura_referencia_c,
+        )
+        loss_peak_kw = pf.loss_kw_peak
+        v_min_pu = pf.v_min_pu
+        converged = pf.converged
+        iterations = pf.iterations
+        engine = "1F_equivalente"
 
     # --- pérdidas en conductores (energía) ---
-    loss_conductors_kwh = segment_loss_kwh(pf.loss_kw_peak, hours_period, fp)
+    loss_conductors_kwh = segment_loss_kwh(loss_peak_kw, hours_period, fp)
+
+    # --- validación cruzada con OpenDSS (opcional) ---
+    # La validación rigurosa se hace sobre casos de un solo nivel de tensión,
+    # donde el modelo es inequívoco y el motor propio reproduce OpenDSS a ~0%.
+    # (La comparación por alimentador completo MT+BT requiere modelar el salto de
+    #  tensión del transformador en el barrido — evolución del motor.)
+    opendss_cmp: dict = {}
+    if comparar_opendss:
+        from ptnt.powerflow.opendss_run import opendss_available
+        from ptnt.powerflow.validation import run_validation_suite
+
+        if not opendss_available():
+            opendss_cmp = {"available": False,
+                           "detail": "OpenDSSDirect no instalado (pip install 'ptnt-bal[opendss]')."}
+        else:
+            casos = [c for c in run_validation_suite(tol_pct=2.0) if c.name == "vs_opendss_MT"]
+            if casos:
+                c = casos[0]
+                opendss_cmp = {
+                    "available": True, "own_loss_kw": c.loss_kw_computed,
+                    "opendss_loss_kw": c.loss_kw_expected, "diff_pct": c.error_pct,
+                    "within_tolerance": c.passed,
+                    "detail": (f"Motor validado contra OpenDSS ({c.error_pct:.2f}% en caso "
+                               "MT controlado)." if c.passed else
+                               f"Discrepancia {c.error_pct:.2f}% contra OpenDSS."),
+                    "scope": "caso_MT_controlado",
+                }
 
     # --- pérdidas en transformadores ---
     asignacion = graph.assign_customers_to_transformers()
@@ -176,29 +242,40 @@ def run_grid_analysis(
 
     metrics = {
         "n_nodes": graph.n_nodes,
-        "pf_converged": pf.converged,
-        "pf_iterations": pf.iterations,
-        "v_min_pu": pf.v_min_pu,
+        "engine": engine,
+        "pf_converged": converged,
+        "pf_iterations": iterations,
+        "v_min_pu": v_min_pu,
         "loss_factor": fp,
         "load_factor": fc,
         "loss_technical_kwh": loss_technical,
         "loss_technical_p10": dist.p10,
         "loss_technical_p90": dist.p90,
+        "loss_neutral_kwh": loss_neutral_kwh,
+        "imbalance_pct_max": imbalance_pct_max,
         "ntl_kwh": balance.ntl_kwh,
         "ntl_pct": balance.ntl_pct,
         "ntl_p10": ntl_dist.p10,
         "ntl_p90": ntl_dist.p90,
         "balance_type": balance.balance_type.value,
+        "opendss": opendss_cmp,
     }
+
+    if loss_neutral_kwh > 0:
+        loss_components["NEUTRO"] = loss_neutral_kwh
 
     return GridResult(
         feeder_code=model.feeder_code,
         balance=balance,
         loss_components_kwh=loss_components,
         transformer_loading=pd.DataFrame(tx_rows),
-        powerflow_converged=pf.converged,
-        v_min_pu=pf.v_min_pu,
+        powerflow_converged=converged,
+        v_min_pu=v_min_pu,
         hours_period=hours_period,
+        loss_neutral_kwh=loss_neutral_kwh,
+        imbalance_pct_max=imbalance_pct_max,
+        engine=engine,
+        opendss_comparison=opendss_cmp,
         loss_technical_p10=dist.p10,
         loss_technical_p50=dist.p50,
         loss_technical_p90=dist.p90,

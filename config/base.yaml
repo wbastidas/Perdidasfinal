@@ -54,6 +54,19 @@ fuentes:
     ruta: "data/ptnt.duckdb"
 
 # -----------------------------------------------------------------------------
+# Migración de datos: de qué fuente/tablas se construye el modelo canónico de red.
+# Las tablas/columnas son configurables para acomodar distintas bases de origen.
+# -----------------------------------------------------------------------------
+migracion:
+  fuente: "resultados_local"          # nombre de una fuente definida en 'fuentes'
+  field_map: "config/field_map.yaml"
+  tabla_segmentos: "silver.segments"
+  tabla_puestos: "silver.transformer_sites"
+  tabla_clientes: "silver.customer_nodes"
+  tabla_luminarias: "silver.streetlights"
+  tolerancia_longitud_pct: 30.0
+
+# -----------------------------------------------------------------------------
 # Ingesta comercial (§6.4). El punto significa cosas distintas por columna.
 # -----------------------------------------------------------------------------
 comercial:

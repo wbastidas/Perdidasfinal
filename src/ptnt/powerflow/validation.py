@@ -73,10 +73,82 @@ def validate_single_load_radial(
     )
 
 
-def run_validation_suite(tol_pct: float = 2.0) -> list[ValidationCase]:
-    """Ejecuta la batería de casos de validación disponibles."""
+def validate_against_opendss(
+    *,
+    v_ll: float = 13800.0,
+    load_kw: float = 500.0,
+    r_ohm_km: float = 0.3,
+    length_km: float = 2.0,
+    tol_pct: float = 2.0,
+) -> ValidationCase | None:
+    """Compara el motor propio contra **OpenDSS** en un caso de un solo nivel de
+    tensión (MT), donde el modelo es inequívoco: una línea con una carga.
 
-    return [
+    Ambos usan la misma carga y se comparan las pérdidas de línea. Devuelve
+    ``None`` si OpenDSSDirect no está instalado.
+    """
+
+    from ptnt.powerflow.opendss_run import opendss_available
+
+    if not opendss_available():
+        return None
+    import tempfile
+    from pathlib import Path as _Path
+
+    import opendssdirect as dss
+
+    v_ln = v_ll / math.sqrt(3.0)
+    cat = ConductorCatalog({"CVAL": Conductor("CVAL", "val", "AL", 50, r_ohm_km, 0.0, 1e6, "MT")})
+    model = NetworkModel(
+        "VALDSS", "SRC",
+        [Edge("s1", "SRC", "N1", "CVAL", length_km, n_phases=3, voltage_v=v_ll, is_lv=False)],
+        customer_nodes={"N1": [{"customer_id": "c1", "energy_kwh": 0}]},
+    )
+    g = build_radial_graph(model)
+    own = run_powerflow(
+        g, {"N1": load_kw}, {"N1": 1.0}, cat, FlujoConfig(max_iteraciones=200),
+        base_voltage_ln=v_ln, t_op=20.0, alpha=0.00403, t_ref=20.0,
+    )
+
+    kv = v_ll / 1000.0
+    # .dss inline con carga TRIFÁSICA BALANCEADA (comparable con el motor propio)
+    script = f"""Clear
+New Circuit.val basekv={kv} bus1=SRC phases=3 pu=1.0 X1=0.0001 R1=0.0001 X0=0.0001 R0=0.0001
+New LineCode.cval nphases=3 R1={r_ohm_km} X1=0.0 R0={r_ohm_km} X0=0.0 Units=km
+New Line.s1 bus1=SRC bus2=N1 phases=3 linecode=cval length={length_km} units=km
+New Load.l1 bus1=N1 phases=3 kV={kv} kW={load_kw} pf=1.0 model=1
+Set voltagebases=[{kv}]
+Calcvoltagebases
+Solve
+"""
+    with tempfile.TemporaryDirectory() as tmp:
+        ruta = _Path(tmp) / "val.dss"
+        ruta.write_text(script, encoding="utf-8")
+        dss.Text.Command(f'Redirect "{ruta}"')
+        dss_line_kw = float(dss.Circuit.LineLosses()[0])
+
+    err = abs(own.loss_kw_peak - dss_line_kw) / dss_line_kw * 100.0 if dss_line_kw else 0.0
+    return ValidationCase(
+        name="vs_opendss_MT",
+        loss_kw_expected=dss_line_kw,
+        loss_kw_computed=own.loss_kw_peak,
+        error_pct=err,
+        passed=err <= tol_pct,
+    )
+
+
+def run_validation_suite(tol_pct: float = 2.0) -> list[ValidationCase]:
+    """Ejecuta la batería de casos de validación disponibles.
+
+    Incluye los casos analíticos siempre, y el caso contra OpenDSS solo si
+    OpenDSSDirect está instalado.
+    """
+
+    casos = [
         validate_single_load_radial(load_kw=500.0, tol_pct=tol_pct),
         validate_single_load_radial(load_kw=300.0, r_ohm_km=0.2, length_km=3.0, tol_pct=tol_pct),
     ]
+    dss_case = validate_against_opendss(tol_pct=tol_pct)
+    if dss_case is not None:
+        casos.append(dss_case)
+    return casos

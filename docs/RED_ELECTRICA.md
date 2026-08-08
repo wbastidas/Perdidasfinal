@@ -4,6 +4,20 @@ Documenta la vía de red del sistema: de la topología al balance de energía y 
 PNT. Se ejecuta con `ptnt analizar-red` (sobre red sintética) o desde
 `ptnt.grid_pipeline.run_grid_analysis` con un `NetworkModel` real.
 
+## Migración de datos (origen → canónico, §4)
+
+`io/migration.py` construye el `NetworkModel` leyendo las tablas de red desde la
+**base de origen** configurada (`migracion` en `config/base.yaml`): DuckDB/Parquet,
+SQL Server, PostgreSQL, Oracle, MySQL o CSV, vía la interfaz `SourceConnector`. El
+mapeo FGDB→canónico vive en `config/field_map.yaml` (§4.3) y los decodificadores de
+dominio (`canonical/decode.py`) resuelven la fase bitmask (A=4,B=2,C=1), el parseo
+de `POTENCIANOMINAL` (String→Double) y la cascada de longitud
+(LONGITUDCAMPO→LONGITUDSISTEMA→SHAPE_Length).
+
+La operación inversa `network_to_tables` + `persist_network` permite el ciclo
+verificable *red → tablas → migración → red* (round-trip), probado en
+`test_3ph_migration.py`. Comando: `ptnt migrar [--feeder F001] [--analizar]`.
+
 ## Flujo
 
 ```mermaid
@@ -39,19 +53,37 @@ la fuente, **sin depender de la red geométrica de ArcGIS**. Ofrece:
 
 ## E8.1 — Flujo de potencia (`powerflow/`)
 
-Barrido hacia atrás/adelante para redes radiales (potencia constante, monofásico
-equivalente balanceado):
+Dos motores de barrido hacia atrás/adelante para redes radiales:
 
+**Monofásico equivalente** (`bfs.py`): potencia constante, balanceado.
 1. Inicializa tensiones a la de la fuente.
-2. **Atrás:** corriente de nodo `I = conj(S/V)`; corriente de tramo = suma del
-   subárbol.
+2. **Atrás:** corriente de nodo `I = conj(S/V)`; corriente de tramo = suma del subárbol.
 3. **Adelante:** `V_hijo = V_padre − I·Z`.
 4. Itera hasta `max|ΔV| < tolerancia`.
 
-Produce corrientes por tramo, tensiones nodales (Vmin en pu) y la pérdida pico.
-La impedancia usa la resistencia del catálogo **corregida por temperatura**.
+**Trifásico desbalanceado con neutro** (`bfs3ph.py`, `--trifasico`): 4 hilos (a,b,c,n).
+- Cargas **por fase** (cada cliente en su fase real vía `SECUENCIAFASE`/`CDAFAS`).
+- Matriz de impedancia de fase 3×3 con **acoples mutuos** (auto `r+jx`, mutua `j·x_m`).
+- **Corriente de neutro** `I_n = −(I_a+I_b+I_c)` y su pérdida `|I_n|²·R_n` — término
+  clave en BT desbalanceada que el modelo balanceado ignora.
+- **Desbalance** de corriente por tramo/nodo.
 
-> Evolución: formulación trifásica desbalanceada con neutro explícito y validación
+Ambos usan la resistencia del catálogo **corregida por temperatura**. Verificación:
+con carga balanceada el motor 3φ da `I_n≈0` y su pérdida de fases coincide con el
+monofásico equivalente; con carga desbalanceada aparecen neutro y su pérdida.
+
+## Validación y OpenDSS (`powerflow/validation.py`, `opendss_run.py`)
+
+- **Analítica:** el motor reproduce la pérdida `3·I²·R` de un radial de una carga
+  con error <0,4% (`ptnt validar-flujo`).
+- **OpenDSS:** con OpenDSSDirect instalado, se ejecuta el mismo caso MT (carga
+  trifásica balanceada, un nivel de tensión) y se comparan las **pérdidas de
+  línea**: el motor propio coincide con OpenDSS a **~0%**.
+- El exportador `.dss` (`opendss_export.py`) genera Circuit/LineCode/Line/
+  Transformer/Load y acepta cargas por nodo para comparaciones con carga idéntica.
+
+> Evolución: modelar el salto de tensión del transformador (MT→BT) dentro del
+> barrido para la comparación OpenDSS por alimentador completo, y la reproducción
 > IEEE 13/34/123.
 
 ## E8 — Pérdidas técnicas (`losses/`)

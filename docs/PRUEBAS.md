@@ -23,7 +23,8 @@ pytest --cov=ptnt --cov-report=term-missing   # con cobertura
 | `test_powerflow.py` | Convergencia sin carga (pérdida 0), caída de tensión con carga, monotonía pérdida-carga |
 | `test_balance_lighting_grid.py` | Balance MEDIDO/INDICATIVO, controles C01/C03, energía de luminaria, **exclusión BAJOMEDICION**, cargabilidad, desbalance de fases |
 | `test_risk.py` | Agregación multinivel del riesgo, penalización por baja confiabilidad, inferencia de configuración de banco |
-| `test_advanced.py` | Monte Carlo (percentiles ordenados), **validación del flujo** (<2% error), motor de reglas (detecta R05/R11/R12/R22/R24/R15; red limpia sin hallazgos), exportador OpenDSS, señales de red N1/N3/N4, reporte ejecutivo HTML |
+| `test_advanced.py` | Monte Carlo (percentiles ordenados), **validación del flujo** (<2% error, incl. OpenDSS si está), motor de reglas (detecta R05/R11/R12/R22/R24/R15; red limpia sin hallazgos), exportador OpenDSS, señales de red N1/N3/N4, reporte ejecutivo HTML |
+| `test_3ph_migration.py` | Decodificadores (fase bitmask, kVA, cascada de longitud), **motor trifásico con neutro** (balanceado→neutro 0, desbalanceado→neutro y pérdida; 3φ≈1φ balanceado), **migración de datos** round-trip y desde DuckDB |
 
 **Propiedades verificadas (hypothesis):**
 - `S ≥ P` para todo P ≥ 0 y cosφ ∈ [0.5, 1].
@@ -71,7 +72,7 @@ sintética y verifica:
 ## Estado actual
 
 ```
-105 passed
+124 passed
 ```
 
 Cobertura del núcleo de dominio (objetivo de la especificación ≥ 85 %):

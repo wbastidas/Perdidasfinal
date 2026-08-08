@@ -38,6 +38,8 @@ sources = [
 ]
 # Detección de anomalías no supervisada
 ml = ["scikit-learn>=1.4", "ruptures>=1.1"]
+# Validación cruzada del flujo con OpenDSS
+opendss = ["OpenDSSDirect.py>=0.8"]
 # Interfaz web para escritorio (analista)
 dashboard = ["streamlit>=1.30", "plotly>=5.18", "pydeck>=0.8"]
 # Interfaz web de solo lectura (consulta por terceros)
@@ -48,7 +50,7 @@ security = ["passlib[bcrypt]>=1.7", "python-jose[cryptography]>=3.3"]
 test = ["pytest>=8.0", "pytest-cov>=4.1", "hypothesis>=6.98"]
 
 all = [
-    "ptnt-bal[store,sources,ml,dashboard,webviewer,security,test]",
+    "ptnt-bal[store,sources,ml,opendss,dashboard,webviewer,security,test]",
 ]
 
 [project.scripts]

@@ -150,10 +150,40 @@ def analizar(
 
 
 @app.command()
+def migrar(
+    feeder: str = typer.Option(None, "--feeder", help="Código de alimentador a migrar"),
+    analizar: bool = typer.Option(False, "--analizar", help="Ejecutar el pipeline tras migrar"),
+    config: str = _CONFIG_OPT,
+):
+    """Migra la red desde la base de origen (config 'migracion') al modelo canónico."""
+
+    from ptnt.io.migration import MigrationError, migrate_network
+
+    cfg = _cargar(config)
+    try:
+        model = migrate_network(cfg, feeder_code=feeder)
+    except MigrationError as exc:
+        console.print(f"[red]Error de migración:[/] {exc}")
+        raise typer.Exit(code=2)
+    n_cli = sum(len(v) for v in model.customer_nodes.values())
+    console.print(f"[green]✓[/] Migrado alimentador {model.feeder_code}: "
+                  f"{len(model.edges)} tramos, {len(model.transformer_sites)} puestos, "
+                  f"{n_cli} clientes (fuente '{cfg.migracion.fuente}')")
+    if analizar:
+        from ptnt.grid_pipeline import run_grid_analysis
+
+        res = run_grid_analysis(model, cfg)
+        console.print(f"  Balance {res.balance.balance_type.value} · "
+                      f"PNT {res.balance.ntl_kwh:,.0f} kWh ({res.balance.ntl_pct:.1f}%)")
+
+
+@app.command()
 def analizar_red(
     n_trafos: int = typer.Option(8, "--trafos", help="Nº de transformadores (red sintética)"),
     clientes_por_trafo: int = typer.Option(20, "--clientes-trafo"),
     pnt: float = typer.Option(0.08, "--pnt", help="Fracción de PNT inyectada"),
+    trifasico: bool = typer.Option(False, "--trifasico", help="Motor trifásico desbalanceado con neutro"),
+    opendss: bool = typer.Option(False, "--opendss", help="Validar contra OpenDSS"),
     config: str = _CONFIG_OPT,
 ):
     """Ejecuta el pipeline de RED (E4–E10) sobre una red radial sintética:
@@ -166,12 +196,20 @@ def analizar_red(
     net = generate_radial_network(
         n_transformers=n_trafos, customers_per_tx=clientes_por_trafo, ntl_fraction=pnt
     )
-    res = run_grid_analysis(net.model, cfg, head_energy_kwh=net.head_energy_kwh)
+    res = run_grid_analysis(
+        net.model, cfg, head_energy_kwh=net.head_energy_kwh,
+        trifasico=trifasico, comparar_opendss=opendss,
+    )
     b = res.balance
 
     console.print(f"\n[bold]Alimentador {res.feeder_code}[/] — balance {b.balance_type.value}")
-    console.print(f"  Flujo de potencia: converge={res.powerflow_converged} "
+    console.print(f"  Motor de flujo: [cyan]{res.engine}[/] · converge={res.powerflow_converged} "
                   f"(iter {res.metrics['pf_iterations']}, Vmin={res.v_min_pu:.4f} pu)")
+    if trifasico:
+        console.print(f"  Pérdida de neutro: {res.loss_neutral_kwh:,.1f} kWh · "
+                      f"desbalance máx: {res.imbalance_pct_max:.0f}%")
+    if opendss and res.opendss_comparison:
+        console.print(f"  OpenDSS: {res.opendss_comparison.get('detail')}")
     console.print(f"  Entrada (cabecera): {b.e_input_kwh:,.0f} kWh")
     console.print(f"  Facturado:          {b.e_billed_kwh:,.0f} kWh")
     console.print(f"  Alumbrado público:  {b.e_streetlight_unmetered_kwh:,.0f} kWh")

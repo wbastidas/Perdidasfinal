@@ -20,8 +20,14 @@ def export_to_dss(
     *,
     base_kv_mt: float = 13.8,
     base_kv_bt: float = 0.22,
+    node_kw: dict[str, float] | None = None,
 ) -> str:
-    """Devuelve el contenido del script ``.dss`` como texto."""
+    """Devuelve el contenido del script ``.dss`` como texto.
+
+    Si se pasa ``node_kw`` (kW por nodo), las cargas usan esos valores exactos, de
+    modo que OpenDSS y el motor propio operen con **la misma definición de carga**
+    (necesario para comparar pérdidas). Si no, la carga se deriva de la energía.
+    """
 
     lines: list[str] = []
     lines.append(f"Clear")
@@ -72,13 +78,17 @@ def export_to_dss(
 
     # Loads (clientes agregados por nodo)
     lines.append("! --- Loads (clientes) ---")
-    for node, clientes in model.customer_nodes.items():
-        kw = sum(c.get("energy_kwh", 0.0) for c in clientes) / (30 * 24)
+    nodos_carga = node_kw.keys() if node_kw is not None else model.customer_nodes.keys()
+    for node in nodos_carga:
+        if node_kw is not None:
+            kw = node_kw[node]
+        else:
+            kw = sum(c.get("energy_kwh", 0.0) for c in model.customer_nodes[node]) / (30 * 24)
         if kw <= 0:
             continue
         lines.append(
             f"New Load.L_{_id(node)} bus1={_bus(node)} phases=1 "
-            f"kV={base_kv_bt} kW={kw:.4f} pf=0.92 model=1"
+            f"kV={base_kv_bt} kW={kw:.4f} pf=1.0 model=1"
         )
     lines.append("")
 
