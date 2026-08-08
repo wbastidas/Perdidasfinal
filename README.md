@@ -28,16 +28,38 @@ datos de la red (esquema **Puesto → Unidad** homologado CNEL EP):
 6. **Dice dónde ir a hacer el levantamiento**: rankings por alimentador, zona,
    ramal, transformador, **sector geográfico** y cliente, con órdenes de trabajo
    priorizadas por rendimiento por visita, exportables y reportables.
-7. **Publica los resultados en dos interfaces web**: un tablero de análisis para
+7. **Mantiene la identidad de las ubicaciones entre corridas**: los sectores y
+   objetivos se identifican por su **coordenada**, no por el orden del cálculo, de
+   modo que una orden emitida hoy sigue apuntando al mismo sitio físico después de
+   cargar el mes siguiente o de modificar la topología.
+8. **Publica los resultados en dos interfaces web**: un tablero de análisis para
    escritorio (Streamlit) y un visor de solo lectura (FastAPI) para consulta por
    terceros.
 
 > Documentación completa en [`docs/`](docs/): [Arquitectura](docs/ARQUITECTURA.md) ·
 > [Instalación en Windows](docs/INSTALACION_WINDOWS.md) ·
+> **[Guía de operación paso a paso](docs/GUIA_OPERACION.md)** ·
 > [Focalización de levantamientos](docs/FOCALIZACION.md) ·
 > [Diagnóstico y validación](docs/DIAGNOSTICO.md) ·
 > [Proceso](docs/PROCESO.md) · [Seguridad](docs/SEGURIDAD.md) ·
 > [Pruebas](docs/PRUEBAS.md).
+
+## Demostración completa con datos ficticios
+
+Antes de conectar la base real, se puede ver **todo el proceso funcionando** sobre
+un escenario ficticio con verdad conocida (hurtos, transferencia entre
+alimentadores y clientes faltantes inyectados a propósito):
+
+```bash
+python scripts/demo_completa.py
+```
+
+Recorre los 9 pasos —generación del escenario, versionado de la red, análisis
+comercial, balance y PNT, diagnóstico de credibilidad, validación contra la base
+de multados, focalización, **carga de un mes nuevo** y **modificación de
+topología**— y contrasta cada resultado contra lo inyectado. El paso a paso y la
+interpretación de cada salida están en
+[`docs/GUIA_OPERACION.md`](docs/GUIA_OPERACION.md).
 
 ---
 
@@ -117,19 +139,21 @@ src/ptnt/
 │   └── scoring.py             # consenso + ranking
 ├── canonical/    # decodificadores de dominio (fase bitmask, kVA) + field_map (§4)
 ├── ref/          # catálogos: conductores, transformadores, CATALOGOESTRUCTURA (Excel)
-├── topology/     # grafo radial + trazas + zonas (E4)
+├── topology/     # grafo radial + trazas + zonas (E4) + versionado de la red (E1.3)
 ├── powerflow/    # flujo BFS 1φ + 3φ con neutro + OpenDSS (export/run) + validación (E8.1)
 ├── losses/       # pérdidas técnicas + Monte Carlo P10/P50/P90 (E8)
 ├── lighting/     # alumbrado público (E7)
 ├── balance/      # balance jerárquico y PNT + controles C01-C06 (E9)
 ├── grid/         # cargabilidad, desbalance, riesgo multinivel, agregación LV al trafo (E10)
 ├── survey/       # focalización: niveles + rutas comerciales (CLIRLSCOD) + sectores + órdenes (§11.5)
+│                 # + locations.py: identidad geográfica estable y registro de ubicaciones
 ├── anomalies/    # transferencias no reportadas, clientes faltantes, incoherencias
 ├── quality/      # reconciliación (§6.1) + motor de reglas R05/R09/R11/R12/R15/R22/R24/P01/P09 (E5)
 ├── store/        # DuckDB (schema.sql) + persistencia
 ├── io/migration.py  # migración origen → modelo canónico (§4.3, round-trip)
 ├── security/     # auth (hash), secretos por entorno
 ├── synth/        # generador de datos (comercial + red radial) con hurtos
+│                 # + scenario.py: escenario ficticio completo con verdad conocida
 ├── dashboard/    # tablero Streamlit (escritorio)
 ├── webviewer/    # visor FastAPI (solo lectura)
 ├── pipeline.py       # orquestador comercial
@@ -145,6 +169,9 @@ pytest -m integration   # extremo a extremo + recuperación de hurtos
 pytest -m security      # auth, secretos, visor
 pytest --cov=ptnt       # cobertura
 ```
+
+**209 pruebas** en verde. Detalle de qué cubre cada archivo y los resultados de la
+demostración extremo a extremo en [`docs/PRUEBAS.md`](docs/PRUEBAS.md).
 
 ## Alcance de esta entrega
 
@@ -169,6 +196,12 @@ de neutro, desbalance), **migración de datos** origen → modelo canónico (§4
 (validado a ~0% en caso MT controlado), **validación del flujo** contra casos
 analíticos, **señales de red** N1/N3/N4, y **exportadores** (XLSX/CSV + reporte
 ejecutivo HTML).
+
+**Operación continua**: **versionado de la topología** con tres hashes
+independientes (conectividad, atributos y estado de maniobra) que invalidan
+**solo** las etapas afectadas por cada cambio, e **identidad geográfica estable**
+de las ubicaciones para que las órdenes de campo sobrevivan a las cargas nuevas y
+a los cambios de red. Ver [`docs/GUIA_OPERACION.md`](docs/GUIA_OPERACION.md).
 
 Queda como evolución del motor: modelar el **salto de tensión del transformador**
 (MT→BT) dentro del barrido para la comparación OpenDSS por alimentador completo, y

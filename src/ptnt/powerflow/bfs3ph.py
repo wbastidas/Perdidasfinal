@@ -40,7 +40,7 @@ class PowerFlow3phResult:
     iterations: int
     converged: bool
     v_min_pu: float
-    imbalance_pct_max: float                 # desbalance máximo de corriente
+    imbalance_pct_max: float                 # desbalance máx. en tramos TRIFÁSICOS
     metrics: dict = field(default_factory=dict)
 
 
@@ -80,10 +80,15 @@ def run_powerflow_3ph(
     t_ref: float = 20.0,
     x_mutual_factor: float = 0.4,
     r_neutral_ohm_km: float = 0.86,
+    umbral_corriente_desbalance: float = 0.10,
 ) -> PowerFlow3phResult:
     """Ejecuta el flujo trifásico desbalanceado de 4 hilos.
 
     ``node_load_kw_by_phase`` mapea nodo → vector [Pa, Pb, Pc] (kW por fase).
+
+    ``umbral_corriente_desbalance`` filtra qué tramos entran en la métrica
+    ``imbalance_pct_max``: solo los trifásicos que llevan al menos esa fracción de
+    la corriente del tramo más cargado (ver el cálculo más abajo).
     """
 
     model = graph.model
@@ -101,6 +106,7 @@ def run_powerflow_3ph(
     z_edge: dict[str, np.ndarray] = {}
     rn_edge: dict[str, float] = {}
     seg_by_child: dict[str, str] = {}
+    trifasico: dict[str, bool] = {}
     for n in orden:
         e = graph.parent_edge(n)
         if e is None:
@@ -114,6 +120,7 @@ def run_powerflow_3ph(
         z_edge[n] = _phase_impedance_matrix(r, x, x_mutual_factor * x) * e.length_km
         rn_edge[n] = r_neutral_ohm_km * e.length_km
         seg_by_child[n] = e.segment_id
+        trifasico[n] = e.n_phases == 3
 
     # Potencia compleja por nodo y fase (VA)
     s_node: dict[str, np.ndarray] = {}
@@ -170,6 +177,8 @@ def run_powerflow_3ph(
     branch_mag: dict[str, np.ndarray] = {}
     neutral_mag: dict[str, float] = {}
     imbalance_max = 0.0
+    imbalance_seg = ""
+    candidatos_desb: list[tuple[float, np.ndarray, str]] = []
     for n, seg in seg_by_child.items():
         i = branch_current.get(n, np.zeros(3, dtype=complex))
         z = z_edge.get(n)
@@ -179,11 +188,29 @@ def run_powerflow_3ph(
         loss_neutral_w += float((abs(i_n) ** 2) * rn_edge.get(n, 0.0))
         branch_mag[seg] = np.abs(i)
         neutral_mag[seg] = abs(i_n)
-        # desbalance de corriente del tramo
-        mags = np.abs(i)
-        prom = float(np.mean(mags))
-        if prom > 0:
-            imbalance_max = max(imbalance_max, float(np.max(np.abs(mags - prom)) / prom * 100.0))
+        # Desbalance de corriente: solo tiene sentido en tramos **trifásicos** y
+        # **cargados**. Una acometida monofásica lleva corriente en una sola fase y
+        # da siempre 200 % (el máximo teórico); un tramo trifásico de cola que
+        # alimenta a un único cliente monofásico, también. Tomar el máximo sobre
+        # todos los tramos devuelve 200 % en cualquier red real y no señala nada.
+        if trifasico.get(n, False):
+            prom = float(np.mean(np.abs(i)))
+            if prom > 0:
+                candidatos_desb.append((prom, np.abs(i), seg))
+
+    # El desbalance que importa es el de los tramos que **transportan** corriente:
+    # el beneficio de rebalancear escala con I², de modo que un tramo de cola muy
+    # desbalanceado pero con corriente despreciable no representa pérdida alguna
+    # (§11.6). Se descartan los tramos por debajo de ``umbral_corriente_desbalance``
+    # veces la corriente del tramo más cargado.
+    if candidatos_desb:
+        prom_max = max(p for p, _, _ in candidatos_desb)
+        for prom, mags, seg in candidatos_desb:
+            if prom < umbral_corriente_desbalance * prom_max:
+                continue
+            desb = float(np.max(np.abs(mags - prom)) / prom * 100.0)
+            if desb > imbalance_max:
+                imbalance_max, imbalance_seg = desb, seg
 
     v_min_pu = min(
         (float(np.min(np.abs(v))) / base_voltage_ln for v in voltages.values()),
@@ -204,6 +231,8 @@ def run_powerflow_3ph(
         metrics={
             "loss_phases_kw": loss_w / 1000.0,
             "loss_neutral_kw": loss_neutral_w / 1000.0,
+            "imbalance_segment": imbalance_seg,
+            "n_segmentos_trifasicos": sum(1 for v in trifasico.values() if v),
         },
     )
 

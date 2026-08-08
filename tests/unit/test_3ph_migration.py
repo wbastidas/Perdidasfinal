@@ -105,6 +105,79 @@ def test_3ph_desbalanceado_produce_neutro():
 
 
 @pytest.mark.unit
+def test_desbalance_ignora_acometidas_monofasicas():
+    """Una acometida monofásica siempre da 200 % de desbalance (el máximo teórico).
+
+    Incluirla haría que la métrica de red marcara 200 % en cualquier red real,
+    enmascarando el desbalance del tronco, que es el que se corrige rebalanceando.
+    """
+
+    modelo = NetworkModel(
+        "F", "SRC",
+        [
+            Edge("tronco", "SRC", "N1", "C1", 1.0, n_phases=3, voltage_v=13800.0),
+            Edge("acom", "N1", "CLI", "C1", 0.02, n_phases=1, voltage_v=13800.0),
+        ],
+        customer_nodes={"CLI": [{"customer_id": "c1", "energy_kwh": 0}]},
+    )
+    g = build_radial_graph(modelo)
+    vln = 13800.0 / 3**0.5
+    r = run_powerflow_3ph(
+        g,
+        # el cliente cuelga de una sola fase; el tronco queda casi balanceado
+        {"CLI": np.array([9.0, 0.0, 0.0]), "N1": np.array([50.0, 55.0, 54.0])},
+        {"CLI": 1.0, "N1": 1.0}, _cat(),
+        FlujoConfig(max_iteraciones=100), base_voltage_ln=vln, t_op=20.0,
+    )
+    assert r.converged
+    assert r.imbalance_pct_max < 30.0, "la acometida monofásica no debe dominar"
+    assert r.metrics["imbalance_segment"] == "tronco"
+    assert r.metrics["n_segmentos_trifasicos"] == 1
+
+
+@pytest.mark.unit
+def test_desbalance_ignora_tramos_trifasicos_de_cola_sin_carga():
+    """Un tramo trifásico de cola que alimenta a un cliente monofásico está 200 %
+    desbalanceado, pero lleva corriente despreciable: rebalancearlo no ahorra nada.
+
+    El indicador debe señalar el tramo cargado, no el peor porcentaje absoluto.
+    """
+
+    modelo = NetworkModel(
+        "F", "SRC",
+        [
+            Edge("tronco", "SRC", "N1", "C1", 1.0, n_phases=3, voltage_v=13800.0),
+            Edge("cola", "N1", "N2", "C1", 0.5, n_phases=3, voltage_v=13800.0),
+        ],
+        customer_nodes={"N2": [{"customer_id": "c1", "energy_kwh": 0}]},
+    )
+    g = build_radial_graph(modelo)
+    vln = 13800.0 / 3**0.5
+    r = run_powerflow_3ph(
+        g,
+        # la cola lleva 1 kW en una sola fase (200 % de desbalance, pero irrelevante);
+        # el tronco lleva 150 kW moderadamente desbalanceados
+        {"N2": np.array([1.0, 0.0, 0.0]), "N1": np.array([60.0, 45.0, 45.0])},
+        {"N2": 1.0, "N1": 1.0}, _cat(),
+        FlujoConfig(max_iteraciones=100), base_voltage_ln=vln, t_op=20.0,
+    )
+    assert r.converged
+    assert r.metrics["imbalance_segment"] == "tronco"
+    assert r.imbalance_pct_max < 100.0
+
+    # bajando el umbral a 0 vuelve a aparecer el tramo de cola: el filtro es la causa
+    r0 = run_powerflow_3ph(
+        g,
+        {"N2": np.array([1.0, 0.0, 0.0]), "N1": np.array([60.0, 45.0, 45.0])},
+        {"N2": 1.0, "N1": 1.0}, _cat(),
+        FlujoConfig(max_iteraciones=100), base_voltage_ln=vln, t_op=20.0,
+        umbral_corriente_desbalance=0.0,
+    )
+    assert r0.metrics["imbalance_segment"] == "cola"
+    assert r0.imbalance_pct_max == pytest.approx(200.0, abs=1.0)
+
+
+@pytest.mark.unit
 def test_3ph_balanceado_similar_a_monofasico_equivalente():
     """Con carga balanceada, la pérdida del motor 3F (fases) debe aproximar la del
     monofásico equivalente con la misma potencia total."""

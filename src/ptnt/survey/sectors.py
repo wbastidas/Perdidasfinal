@@ -115,8 +115,13 @@ def cluster_sectors(
         if feeder_col and feeder_col in sub.columns:
             vals = sub[feeder_col].dropna()
             feeder = str(vals.iloc[0]) if not vals.empty else None
+        # Identificador anclado a la COORDENADA, no a la etiqueta del algoritmo:
+        # el mismo lugar conserva su identificador entre corridas y cargas nuevas,
+        # que es lo que necesita una orden de trabajo ya emitida a campo.
+        from ptnt.survey.locations import geo_code
+
         sectores.append(Sector(
-            sector_id=f"SEC-{int(label):04d}",
+            sector_id=geo_code(cx, cy, prefijo="SEC"),
             customers=[str(v) for v in sub[id_col].tolist()],
             n_customers=int(len(sub)),
             suspect_energy_kwh=float(sub[energy_col].sum()) if energy_col in sub.columns else 0.0,

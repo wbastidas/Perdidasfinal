@@ -90,7 +90,8 @@ def detect_transfers(
     feeder_col: str = "feeder_code",
     period_col: str = "period",
     kwh_col: str = "kwh_delivered",
-    cambio_min_pct: float = 15.0,
+    cambio_min_pct: float = 10.0,
+    magnitud_min_kwh: float = 0.0,
     simetria_min: float = 0.60,
     exigir_sostenido: bool = True,
     vecinos: dict[str, set[str]] | None = None,
@@ -101,6 +102,12 @@ def detect_transfers(
     período, kWh). ``vecinos`` restringe los pares a alimentadores eléctricamente
     vecinos (si se conoce la topología de enlaces); sin él se consideran todos los
     pares, lo que puede producir coincidencias espurias que el operador debe filtrar.
+
+    El umbral relativo se exige a **al menos uno** de los dos alimentadores, no a
+    ambos: la misma transferencia en kWh representa un porcentaje distinto según el
+    tamaño de cada alimentador, y exigirlo a los dos deja escapar transferencias
+    reales entre un alimentador chico y uno grande. La simetría ya garantiza que
+    ambos se movieron en magnitudes comparables.
     """
 
     if head_energy is None or head_energy.empty:
@@ -141,8 +148,7 @@ def detect_transfers(
             base_a = piv[fa].iloc[max(0, i - 1)]
             if not np.isfinite(base_a) or base_a <= 0:
                 continue
-            if abs(da) / base_a * 100.0 < cambio_min_pct:
-                continue   # el cambio no es abrupto
+            pct_a = abs(da) / base_a * 100.0
             for fb in alimentadores[ia + 1:]:
                 if vecinos is not None and fb not in vecinos.get(fa, set()):
                     continue
@@ -152,11 +158,18 @@ def detect_transfers(
                 base_b = piv[fb].iloc[max(0, i - 1)]
                 if not np.isfinite(base_b) or base_b <= 0:
                     continue
-                if abs(db) / base_b * 100.0 < cambio_min_pct:
+                pct_b = abs(db) / base_b * 100.0
+                # Basta con que el cambio sea abrupto para UNO de los dos: la
+                # misma transferencia pesa distinto en un alimentador chico que
+                # en uno grande.
+                if max(pct_a, pct_b) < cambio_min_pct:
                     continue
                 # simetría: lo que uno pierde, el otro gana
                 simetria = min(abs(da), abs(db)) / max(abs(da), abs(db))
                 if simetria < simetria_min:
+                    continue
+                magnitud_par = (abs(da) + abs(db)) / 2.0
+                if magnitud_par < magnitud_min_kwh:
                     continue
                 # sostenido: el nivel se mantiene el mes siguiente
                 sostenido = True
@@ -170,10 +183,10 @@ def detect_transfers(
                         sostenido = not revierte
                 if exigir_sostenido and not sostenido:
                     continue
-                magnitud = (abs(da) + abs(db)) / 2.0
+                magnitud = magnitud_par
                 confianza = float(np.clip(
                     0.5 * simetria + 0.3 * (1.0 if sostenido else 0.0) +
-                    0.2 * min(abs(da) / base_a, 1.0), 0, 1
+                    0.2 * min(max(pct_a, pct_b) / 100.0, 1.0), 0, 1
                 ))
                 candidatos.append(TransferCandidate(
                     feeder_a=str(fa), feeder_b=str(fb), period=str(per),

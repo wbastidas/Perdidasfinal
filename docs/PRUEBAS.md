@@ -24,10 +24,11 @@ pytest --cov=ptnt --cov-report=term-missing   # con cobertura
 | `test_balance_lighting_grid.py` | Balance MEDIDO/INDICATIVO, controles C01/C03, energía de luminaria, **exclusión BAJOMEDICION**, cargabilidad, desbalance de fases |
 | `test_risk.py` | Agregación multinivel del riesgo, penalización por baja confiabilidad, inferencia de configuración de banco |
 | `test_advanced.py` | Monte Carlo (percentiles ordenados), **validación del flujo** (<2% error, incl. OpenDSS si está), motor de reglas (detecta R05/R11/R12/R22/R24/R15; red limpia sin hallazgos), exportador OpenDSS, señales de red N1/N3/N4, reporte ejecutivo HTML |
-| `test_3ph_migration.py` | Decodificadores (fase bitmask, kVA, cascada de longitud), **motor trifásico con neutro** (balanceado→neutro 0, desbalanceado→neutro y pérdida; 3φ≈1φ balanceado), **migración de datos** round-trip y desde DuckDB |
+| `test_3ph_migration.py` | Decodificadores (fase bitmask, kVA, cascada de longitud), **motor trifásico con neutro** (balanceado→neutro 0, desbalanceado→neutro y pérdida; 3φ≈1φ balanceado), **migración de datos** round-trip y desde DuckDB, **indicador de desbalance** (ignora acometidas monofásicas y tramos de cola sin carga) |
 | `test_survey.py` | **Derivación de impedancias** (AWG/kcmil, R vs fabricante <3%, cobertura 415/415, kcmil mal etiquetado), **focalización** (ramales ignoran acometidas, todos los niveles, ramal sin señales no prioritario, baja confiabilidad = problema de datos, sectores por cercanía, órdenes por rendimiento por visita, exportable/reportable) |
 | `test_anomalies_confirmed.py` | **Transferencias** (detecta la inyectada, 1 mes = NO_APLICABLE, pico no es transferencia), **clientes faltantes** (ambos sentidos, umbral de energía, concentración por ruta), **incoherencias** (PNT negativa bloquea publicación, transferencia excluye del ranking), **base de multados** (lift real, control negativo con ranking aleatorio, fecha de corte contra fuga, calibración detecta señal inútil, PU learning), **ruta comercial** (sospecha, incoherencia por ceros/estimadas, nivel del plan) |
 | `test_catalog_lv.py` | **Catálogo CATALOGOESTRUCTURA** (clasificación por prefijo, kVA/banco, balastro AP, kVAR, doble nivel), **agregación LV al transformador** sin doble conteo en tronco, **totalizador** (no re-suma individuales), **semáforos/cámaras** como AP no medido, balastro desde catálogo |
+| `test_locations_versioning.py` | **Identidad geográfica estable** (código determinista, agrupa coordenadas cercanas, sectores conservan ubicación al cargar datos nuevos y ante reordenamiento), **registro persistente** (acumula priorizaciones sin inflar por re-ejecución, reincidencia, cierre por inspección, persistencia en disco), **versionado de topología** (alta, sin cambio, cada hash reacciona solo a su dominio, invalidación selectiva por tipo de cambio, historial, **las ubicaciones sobreviven al cambio de red**) |
 
 **Propiedades verificadas (hypothesis):**
 - `S ≥ P` para todo P ≥ 0 y cosφ ∈ [0.5, 1].
@@ -77,10 +78,36 @@ sintética y verifica:
   **200** con credencial válida y **403** desde una red no autorizada.
 - El conector SQL usa `URL.create` parametrizado (no concatena la contraseña).
 
+## Demostración extremo a extremo con datos ficticios
+
+Además de las suites automáticas, `scripts/demo_completa.py` ejecuta el proceso
+**completo** sobre un escenario ficticio con verdad conocida (`ptnt.synth.scenario`),
+de modo que cada resultado se puede contrastar contra lo que se inyectó:
+
+```bash
+python scripts/demo_completa.py            # 9 pasos, ~1 min
+```
+
+| Paso | Qué demuestra | Verdad inyectada vs. detectado |
+|---|---|---|
+| 1 | Generación del escenario | 1 200 clientes, 36 meses, 64 hurtos inyectados, 38 multados (59 % histórico) |
+| 2 | Carga y versionado inicial | ALTA v1: 337 tramos, 164 clientes |
+| 3 | Análisis comercial | promedio 12 meses, Δ potencia SIG→corregido −91 %, 60 sospechosos |
+| 4 | Red y balance con incertidumbre | PNT 1 067 kWh = 2,3 % (P10–P90 769–1 377) |
+| 5 | Diagnóstico de credibilidad | transferencia F002→F003 detectada (simetría 0,90); 36/36 clientes faltantes; sin incoherencias |
+| 6 | Validación contra multados | **lift 12,6×**, AUC 0,861, mediana de hurtos en el 3 % del ranking |
+| 7 | Focalización | 300 objetivos en 7 niveles; 10 órdenes cubren 171 clientes / 270 113 kWh |
+| 8 | **Estabilidad de ubicaciones** | 11/11 sectores conservan su identificador tras cargar datos nuevos |
+| 9 | Modificación de topología | cada tipo de cambio invalida **solo** sus etapas; v1 se conserva como histórica |
+
+Los pasos 8 y 9 son los que se corresponden con los tests de
+`test_locations_versioning.py`: la demo los muestra sobre datos realistas y los
+tests los fijan como garantía de regresión.
+
 ## Estado actual
 
 ```
-189 passed
+209 passed
 ```
 
 Cobertura del núcleo de dominio (objetivo de la especificación ≥ 85 %):
