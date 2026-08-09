@@ -338,6 +338,37 @@ class GeoPackage:
         self.con.commit()
         return len(filas)
 
+    def actualizar(self, tabla: str, valores: dict, *,
+                   donde: str, args: tuple = ()) -> int:
+        """Actualiza filas y **mantiene el índice espacial al día**.
+
+        El R*Tree no se actualiza solo: es una tabla virtual aparte. Si se
+        modifica la geometría sin tocarlo, el elemento sigue existiendo pero deja
+        de aparecer en las consultas por ventana —invisible en el mapa aunque el
+        dato esté guardado—. El técnico lo vuelve a capturar y queda duplicado.
+        """
+
+        if not valores:
+            return 0
+        sets = ", ".join(f'"{k}" = ?' for k in valores)
+        sql = f'UPDATE "{tabla}" SET {sets} WHERE {donde}'
+        cur = self.con.execute(sql, [*valores.values(), *args])
+        n = cur.rowcount
+
+        if "geom" in valores and n:
+            filas = self.con.execute(
+                f'SELECT fid, geom FROM "{tabla}" WHERE {donde}', args)
+            for f in filas.fetchall():
+                env = envolvente(f["geom"])
+                if env is None:
+                    continue
+                self.con.execute(
+                    f'INSERT OR REPLACE INTO "rtree_{tabla}_geom" '
+                    f"VALUES (?,?,?,?,?)",
+                    (f["fid"], env[0], env[2], env[1], env[3]))
+        self.con.commit()
+        return n
+
     def contar(self, tabla: str) -> int:
         return int(self.con.execute(f'SELECT COUNT(*) FROM "{tabla}"').fetchone()[0])
 
@@ -384,6 +415,22 @@ class GeoPackage:
             except (json.JSONDecodeError, TypeError):
                 out[r["clave"]] = r["valor"]
         return out
+
+
+def envolvente(blob: bytes | None) -> tuple[float, float, float, float] | None:
+    """Caja envolvente de una geometría GeoPackage: ``(minx, miny, maxx, maxy)``.
+
+    Se calcula desde las coordenadas y no se lee de la cabecera: un productor
+    externo puede escribir la geometría sin envolvente, y en ese caso la
+    cabecera no la trae.
+    """
+
+    g = leer_geometria(blob) if blob else None
+    if not g or not g.get("coords"):
+        return None
+    xs = [c[0] for c in g["coords"]]
+    ys = [c[1] for c in g["coords"]]
+    return (min(xs), min(ys), max(xs), max(ys))
 
 
 def ahora_utc() -> str:

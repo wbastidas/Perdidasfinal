@@ -232,9 +232,13 @@ def test_sincronizar_no_cierra_las_ordenes_que_siguen_abiertas(despacho, tmp_pat
     assert final.obtener(mias[0]).estado is EstadoOrden.COMPLETADA
 
     empezada = final.obtener(mias[1])
-    assert empezada.estado is EstadoOrden.DESCARGADA
+    # Pasa a EN_PROCESO: el técnico la abrió en el dispositivo, y dejar el
+    # backend en «descargada» mostraría al supervisor trabajo sin empezar donde
+    # hay una cuadrilla trabajando.
+    assert empezada.estado is EstadoOrden.EN_PROCESO
     assert empezada.visitas == 1, "la jornada trabajada debe quedar anotada"
     assert empezada.fecha_ultimo_avance
+    assert empezada.fecha_inicio
 
     # Las que nadie abrió no cuentan jornada: inflarían el indicador y harían
     # parecer trabajada una orden que no se visitó.

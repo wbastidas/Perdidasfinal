@@ -68,26 +68,41 @@ datos de la red (esquema **Puesto → Unidad** homologado CNEL EP):
 > [Segmentación de clientes](docs/SEGMENTACION.md) ·
 > **[Prueba a escala — 20 000 clientes](docs/PRUEBA_COSTA_20K.md)** ·
 > **[Aplicación móvil de campo](docs/APLICACION_MOVIL.md)** ·
+> **[El ciclo completo](docs/CICLO_COMPLETO.md)** ·
 > [Focalización de levantamientos](docs/FOCALIZACION.md) ·
 > [Diagnóstico y validación](docs/DIAGNOSTICO.md) ·
 > [Proceso](docs/PROCESO.md) · [Seguridad](docs/SEGURIDAD.md) ·
 > [Pruebas](docs/PRUEBAS.md).
 
-## Demostración completa con datos ficticios
+## El ciclo completo con datos ficticios
 
-Antes de conectar la base real, se puede ver **todo el proceso funcionando** sobre
-un escenario ficticio con verdad conocida (hurtos, transferencia entre
-alimentadores y clientes faltantes inyectados a propósito):
+Antes de conectar la base real se puede ver **todo el proceso funcionando**, del
+padrón sintético a la red corregida por las cuadrillas:
 
 ```bash
-python scripts/demo_completa.py
+python scripts/demo_ciclo_completo.py     # 15 etapas, ~40 s
 ```
 
-Recorre los 9 pasos —generación del escenario, versionado de la red, análisis
-comercial, balance y PNT, diagnóstico de credibilidad, validación contra la base
-de multados, focalización, **carga de un mes nuevo** y **modificación de
-topología**— y contrasta cada resultado contra lo inyectado. El paso a paso y la
-interpretación de cada salida están en
+Recorre el ciclo entero sin datos preparados —cada etapa consume lo que produjo la
+anterior—: escenario ficticio, análisis comercial, balance y PNT, diagnóstico de
+credibilidad, focalización, definición de trabajo adicional, reparto entre tres
+cuadrillas, paquetes descargables, **descarga simultánea desde la API real**, la
+jornada de campo (editar, mover con propagación, **reconectar un consumidor**,
+fotografiar), subida de los tres a la vez, revisión granular del supervisor,
+recálculo selectivo, **segundo día de trabajo** y verificación final.
+
+**22 comprobaciones** validan cada etapa contra lo inyectado, y el guion falla con
+código distinto de cero si alguna no pasa. Resultados y lectura en
+[`docs/CICLO_COMPLETO.md`](docs/CICLO_COMPLETO.md).
+
+Demostraciones más acotadas:
+
+```bash
+python scripts/demo_completa.py            # solo el análisis, 9 pasos
+python scripts/demo_campo_multiusuario.py  # solo el despacho a 3 cuadrillas
+```
+
+El paso a paso y la interpretación de cada salida están en
 [`docs/GUIA_OPERACION.md`](docs/GUIA_OPERACION.md).
 
 ## Prueba a escala con informes PDF
@@ -227,7 +242,7 @@ pytest -m security      # auth, secretos, visor
 pytest --cov=ptnt       # cobertura
 ```
 
-**375 pruebas** en verde (más las pruebas JVM de la app Android, en `mobile/`). Detalle de qué cubre cada archivo y los resultados de la
+**380 pruebas** en verde (más las pruebas JVM de la app Android, en `mobile/`). Detalle de qué cubre cada archivo y los resultados de la
 demostración extremo a extremo en [`docs/PRUEBAS.md`](docs/PRUEBAS.md).
 
 ## Alcance de esta entrega

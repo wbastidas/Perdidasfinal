@@ -312,17 +312,175 @@ Lo que cambia es la prioridad, no la ubicación.
 
 ---
 
+## 9. Llevar el trabajo al campo y traerlo de vuelta
+
+Hasta aquí el sistema dice **dónde ir**. Esta parte es la que cierra el ciclo: sin
+la vuelta del campo, el análisis produce informes que nadie verifica y el SIG
+envejece igual.
+
+### 9.1 Dar de alta a las cuadrillas
+
+```bash
+ptnt campo-usuario jperez --nombre "Juan Pérez" --unidad CNEL-GYE
+ptnt campo-usuario mcedeno --nombre "María Cedeño" --unidad CNEL-GYE
+```
+
+Los usuarios se crean **aquí, nunca desde el teléfono**: quién puede editar la
+red es una decisión administrativa. Cada equipo recibe un token revocable al
+vincularse; si se pierde el teléfono, se revoca sin tocar la cuenta.
+
+### 9.2 Definir el trabajo
+
+Dos caminos, y los dos terminan en el mismo sitio:
+
+```bash
+# a) Lo que dijo el análisis (ya lo produjo `ptnt focalizar`)
+#    → outputs/ordenes_levantamiento.csv
+
+# b) Lo que decide el jefe de zona, que el ranking nunca va a pedir
+ptnt campo-definir --tipo CENSO --alimentador GYE-04 --por-orden 40
+ptnt campo-definir --tipo VERIFICACION_MEDIDOR --lista cuentas_comercial.csv
+ptnt campo-definir --tipo ACTUALIZACION_CARTOGRAFICA --centro 631000,9762500 --radio 600
+```
+
+Un censo no tiene consumo anómalo que detectar —no hay clientes registrados— y
+justo por eso hay que ir. Una zona con el SIG viejo no tiene mal balance: lo
+tiene **incalculable**.
+
+### 9.3 Repartir la jornada
+
+```bash
+# Primero se simula: repartir es reversible en pantalla y caro en la calle
+ptnt campo-repartir --usuarios jperez,mcedeno,acruz --top 30 --criterio kwh
+
+# Cuando el reparto convence:
+ptnt campo-repartir --usuarios jperez,mcedeno,acruz --top 30 --aplicar
+```
+
+Salida típica:
+
+```
+usuario  ordenes  clientes  recuperable_kwh_mes  dispersion_km
+ jperez        9       256              69449.0           0.90
+mcedeno        8       201              69471.0           0.34
+  acruz        7       219              72828.0           0.30
+  → desbalance 4.8 %
+```
+
+Las **dos** métricas importan. El desbalance dice si alguien va a terminar a
+media tarde mientras otro no acaba; la dispersión, cuánto va a manejar cada
+cuadrilla. Un reparto perfectamente equilibrado que manda a alguien a dos
+extremos de la ciudad no sirve: el traslado se come las visitas, y las visitas
+son lo único que recupera energía.
+
+Con `--max-por-usuario` se limita la jornada. Lo que no cabe se reporta aparte,
+no se reparte igual: una cuadrilla con más órdenes de las que puede hacer no las
+hace, las arrastra.
+
+### 9.4 Armar los paquetes
+
+```bash
+ptnt campo-paquetes --red data/red.duckdb --teselas cartografia/gye.mbtiles
+```
+
+Un `.gpkg` por técnico, con **todas** sus órdenes dentro. No uno por orden: el
+snap necesita ver la red del área completa, y un archivo por orden duplicaría los
+elementos compartidos permitiendo editarlos en dos sitios con valores distintos.
+
+### 9.5 El técnico trabaja
+
+```bash
+ptnt campo-servir --host 0.0.0.0 --puerto 8090
+```
+
+Desde la app: vincula el equipo una vez, ve **lo suyo**, descarga y sale. A partir
+de ahí no necesita señal. En campo puede crear, mover, editar y eliminar; mover un
+cliente arrastra su acometida; **reconectar un cliente a otro transformador** es
+la corrección que más vale de la visita, porque mueve consumo de una zona de
+balance a otra.
+
+Un trabajo puede durar varios días: sincronizar sube el avance y **no cierra** las
+órdenes que el técnico no marcó como terminadas.
+
+### 9.6 Revisar lo que volvió
+
+```bash
+ptnt campo-revisar <lote-id>                    # ver qué cambió
+ptnt campo-revisar <lote-id> --aceptar-todo     # aceptar
+ptnt campo-revisar <lote-id> --rechazar 4,7     # aceptar todo menos esas dos
+```
+
+La revisión es **granular a propósito**: se puede aceptar la lectura del medidor
+y rechazar el cambio de tarifa del mismo cliente. Nada entra al modelo sin pasar
+por aquí — aceptar ediciones de red automáticamente degradaría el SIG en vez de
+mejorarlo.
+
+Al aceptar, el comando dice **qué recalcular**:
+
+```
+3 cambio(s) aceptado(s) sobre 9 elemento(s) de 2 capa(s).
+1 reconexión(es) de consumidor: cambian el balance de la zona que pierde el
+cliente y de la que lo gana. Alimentadores afectados: GYE-04, GYE-05.
+Recalcular: balance, flujo, focalizacion, perdidas, ranking, topologia.
+```
+
+### 9.7 Recalcular
+
+```bash
+ptnt analizar-red      # el balance cambia: el consumo se movió de zona
+ptnt focalizar         # el ranking cambia con él
+```
+
+Y vuelve a empezar. Un sector priorizado hoy **sigue siendo el mismo sector** el
+mes que viene: el identificador se deriva de la coordenada, no del orden de la
+lista.
+
+### 9.8 Verlo todo de una vez
+
+```bash
+python scripts/demo_ciclo_completo.py
+```
+
+Recorre las 15 etapas sobre datos sintéticos, desde generar el padrón hasta
+recalcular tras las correcciones del campo, con 22 comprobaciones que fallan si
+algo deja de encajar.
+
+---
+
 ## Resumen del flujo
 
 ```
-migrar ──► analizar ──► analizar-red ──► diagnostico ──► focalizar ──► dashboard/visor
-  │           │              │                │              │
-versión    consumo y      balance y      credibilidad    órdenes de
-de red      hurto          pérdidas      (¿es creíble?)  levantamiento
-                                                              │
-                                                    campo ────┘
-                                                      │
-                                            resultados ──► base de multados
-                                                              │
-                                                    recalibra el detector
+migrar ──► analizar ──► analizar-red ──► diagnostico ──► focalizar
+  │           │              │                │             │
+versión    consumo y      balance y      credibilidad   dónde ir
+de red      hurto          pérdidas      (¿es creíble?)      │
+                                                             │
+                          campo-definir ────────────────────►│  (censo, cartografía,
+                          (lo que el ranking no pide)         │   listado comercial)
+                                                             ▼
+                                                     campo-repartir
+                                                             │
+                                                     campo-paquetes
+                                                             │
+                                                     campo-servir
+                                                             │
+                                    ┌────────────────────────┴──────────┐
+                                    ▼                                   │
+                            APP MÓVIL (sin señal)                       │
+                            editar · mover · reconectar · fotografiar   │
+                                    │                                   │
+                                    └──────► sincronizar ───────────────┘
+                                                     │
+                                             campo-revisar
+                                          (acepta / rechaza)
+                                                     │
+                        ┌────────────────────────────┴──────────────┐
+                        ▼                                           ▼
+              recálculo selectivo                        base de multados
+        (analizar-red + focalizar)                    recalibra el detector
+                        │                                           │
+                        └───────────────► ranking nuevo ◄───────────┘
 ```
+
+El ciclo **se cierra**: lo que se encuentra en la calle corrige el modelo, y el
+modelo corregido dice dónde ir la próxima vez.

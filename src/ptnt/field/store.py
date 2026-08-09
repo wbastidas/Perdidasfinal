@@ -348,23 +348,39 @@ class AlmacenCampo:
         return n
 
     def anotar_avance(self, orden: str, *, actor: str = "") -> bool:
-        """Suma una jornada trabajada sin cerrar la orden.
+        """Suma una jornada trabajada y deja la orden **abierta y en proceso**.
 
         Es lo que ocurre cuando un trabajo largo sincroniza al final del día: hay
         avance real que registrar, pero la orden sigue abierta. Sin esto, un
         trabajo de una semana es indistinguible de uno abandonado el primer día.
+
+        El estado pasa a EN_PROCESO si aún estaba DESCARGADA. Es corrección, no
+        adorno: el técnico abrió la orden en el dispositivo y el backend seguía
+        diciendo «descargada», así que el tablero del supervisor mostraba trabajo
+        sin empezar donde había una cuadrilla trabajando.
         """
 
+        ahora = _ahora()
         with self.escritura() as con:
             cur = con.execute(
-                "UPDATE asignacion SET visitas = visitas + 1, "
-                "fecha_ultimo_avance = ? "
+                "UPDATE asignacion SET "
+                "  visitas = visitas + 1, "
+                "  fecha_ultimo_avance = ?, "
+                "  estado = CASE WHEN estado = 'DESCARGADA' THEN 'EN_PROCESO' "
+                "                ELSE estado END, "
+                "  fecha_inicio = CASE WHEN fecha_inicio = '' THEN ? "
+                "                      ELSE fecha_inicio END "
                 "WHERE orden_trabajo = ? AND estado IN "
                 "('DESCARGADA','EN_PROCESO')",
-                (_ahora(), orden))
+                (ahora, ahora, orden))
             ok = cur.rowcount > 0
             if ok:
-                self._anotar(con, "AVANCE", orden=orden, actor=actor)
+                fila = con.execute(
+                    "SELECT estado, visitas FROM asignacion "
+                    "WHERE orden_trabajo = ?", (orden,)).fetchone()
+                self._anotar(con, "AVANCE", orden=orden, actor=actor,
+                             detalle={"estado": fila["estado"],
+                                      "jornada": fila["visitas"]})
         return ok
 
     def estancadas(self, dias: int = 5) -> list[dict]:

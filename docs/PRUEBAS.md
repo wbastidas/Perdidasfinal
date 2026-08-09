@@ -34,6 +34,7 @@ pytest --cov=ptnt --cov-report=term-missing   # con cobertura
 | `test_campo.py` | **GeoPackage OGC** (geometría ida y vuelta, envolvente, metadatos estándar, **no pierde columnas con filas heterogéneas**, índice espacial, manifiesto interno), **esquema** (Puesto→Unidad editable por separado, guid estable, dominios para el móvil, fotos con ubicación y fecha), **edición topológica** (**mover un cliente arrastra el extremo de su acometida**, mover un puesto arrastra sus unidades, **la relación eléctrica NO arrastra geometría**, tope de propagación, snap, no se elimina un puesto con dependientes, validación), **órdenes** (solo hash, vincular revoca el anterior, asignación masiva, no reasigna en silencio, máquina de estados), **paquete** (recorte al área, manifiesto, aviso por tamaño, huella), **sincronización** (lee el diario, rechaza paquete ajeno, hueco de secuencia bloquea, GPS impreciso advierte, **revisión parcial**, propagación incoherente advierte, **etapas a recalcular**), **histórico** (campo + archivo, historia de un elemento, más editados) |
 | `test_campo_multiusuario.py` | **Concurrencia** (tres cuadrillas sincronizando a la vez no pierden ninguna actualización, la segunda escritura sobre el estado ya consumido no surte efecto, una transición perdida se reporta como conflicto, la asignación en conflicto no deja nada escrito, cierre idempotente, el registro sobrevive al proceso, **migra un registro JSON anterior**), **reparto entre cuadrillas** (equilibra la carga, mantiene juntas las órdenes de cada una, el tope de jornada deja fuera lo de menor energía, sin coordenadas sigue siendo parejo, **es determinista**, aplicar el reparto deja a cada técnico con lo suyo, criterio desconocido falla claro), bitácora y carga por usuario |
 | `test_campo_reconexion.py` | **Reconexión de consumidor** (la conexión es editable en campo y llega así al móvil, reconectar es topológico y no un atributo, **obliga a recalcular las dos zonas** —origen y destino—, sin origen o destino bloquea el lote, reconectar al mismo transformador solo advierte, un cambio rechazado no arrastra recálculo), **definición del trabajo** (un censo no se evalúa por energía, bloques geográficamente compactos, las cuentas ausentes del padrón se reportan, selección por área dibujada, unir campañas sin códigos repetidos) |
+| `test_ciclo_campo_completo.py` *(integración)* | **Contrato móvil ↔ backend** verificado con el simulador: lo que la app escribe el backend lo lee y lo entiende (autor, precisión, secuencia sin huecos), **mover arrastra la acometida y llega marcado como propagado**, una reconexión recorre el ciclo hasta el recálculo de las dos zonas, **dos jornadas no duplican el histórico**, y eliminar un puesto con clientes se impide en el dispositivo |
 | `test_locations_versioning.py` | **Identidad geográfica estable** (código determinista, agrupa coordenadas cercanas, sectores conservan ubicación al cargar datos nuevos y ante reordenamiento), **registro persistente** (acumula priorizaciones sin inflar por re-ejecución, reincidencia, cierre por inspección, persistencia en disco), **versionado de topología** (alta, sin cambio, cada hash reacciona solo a su dominio, invalidación selectiva por tipo de cambio, historial, **las ubicaciones sobreviven al cambio de red**) |
 
 **Propiedades verificadas (hypothesis):**
@@ -135,6 +136,40 @@ cualquier paquete real. Corregido.
 El recorrido completo, con reparto, paquetes en lote y verificación final, está en
 `scripts/demo_campo_multiusuario.py` (24 órdenes, 3 cuadrillas, 24/24 correctas).
 
+## El ciclo entero, de punta a punta
+
+`scripts/demo_ciclo_completo.py` recorre **las 15 etapas** sin datos preparados:
+cada una consume lo que produjo la anterior.
+
+```bash
+python scripts/demo_ciclo_completo.py      # ~40 s, 22 comprobaciones
+```
+
+| Etapa | Qué demuestra | Verificación |
+|---|---|---|
+| 1–2 | Escenario sintético y análisis comercial | 900 clientes × 36 meses, 100 % clasificado |
+| 3 | Balance y PNT | flujo 3φ converge, PNT ≥ 0 |
+| 4 | Credibilidad | detecta **la** transferencia inyectada y **los 27** clientes sin SIG |
+| 5 | Focalización | 298 objetivos en 7 niveles; ubicaciones con identidad estable |
+| 6 | Trabajo definido a mano | un censo lleva 0 en recuperable, a propósito |
+| 7 | Reparto entre 3 cuadrillas | desbalance 8 %, dispersión 1,9 km |
+| 8–9 | Paquetes y descarga simultánea | 20/20 órdenes, cada técnico ve **solo lo suyo** |
+| 10 | **La jornada de campo** | editar, mover con propagación, reconectar, fotografiar |
+| 11 | Subida simultánea | 3 lotes íntegros, órdenes empezadas **siguen abiertas** |
+| 12 | Revisión granular | acepta unos cambios y rechaza otros del mismo lote |
+| 13 | Invalidación selectiva | la reconexión obliga a rehacer topología, balance y ranking |
+| 14 | **Segundo día** | lo enviado ayer no se reprocesa; el avance quedó anotado |
+| 15 | Coherencia final | ninguna orden perdida en todo el ciclo |
+
+El guion **termina con código de salida distinto de cero** si alguna comprobación
+falla: una demostración que solo imprime no demuestra nada.
+
+Ejecutarlo destapó dos incoherencias reales que las pruebas por módulo no veían:
+el simulador no marcaba lo subido —así que el día 2 reenviaba el día 1— y una
+orden abierta en el dispositivo figuraba como «descargada» en el backend, de modo
+que el tablero del supervisor mostraba trabajo sin empezar donde había una
+cuadrilla trabajando. Las dos están corregidas y con prueba.
+
 ## Demostración extremo a extremo con datos ficticios
 
 Además de las suites automáticas, `scripts/demo_completa.py` ejecuta el proceso
@@ -164,7 +199,7 @@ tests los fijan como garantía de regresión.
 ## Estado actual
 
 ```
-375 passed
+380 passed
 ```
 
 Cobertura del núcleo de dominio (objetivo de la especificación ≥ 85 %):

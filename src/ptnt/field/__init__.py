@@ -18,6 +18,7 @@ from ptnt.field.workdef import (
     unir,
 )
 from ptnt.field.gpkg import Campo, Capa, GeoPackage, linea, punto
+from ptnt.field.simulator import ResumenJornada, SimuladorCampo
 from ptnt.field.package import (
     AreaTrabajo,
     ResultadoPaquete,
@@ -71,6 +72,7 @@ __all__ = [
     "por_area", "por_lista", "desde_plan", "unir",
     "construir_paquete", "construir_paquetes", "resumen_paquetes",
     "ResultadoPaquete", "AreaTrabajo", "huella_paquete",
+    "SimuladorCampo", "ResumenJornada",
     "recibir_paquete", "revisar", "aplicar", "LoteSincronizacion",
     "EstadoRevision", "Severidad", "HistoricoCambios",
 ]

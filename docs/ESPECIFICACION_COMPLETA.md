@@ -253,13 +253,42 @@ dominio), el **módulo** que lo implementa y la **prueba** que lo verifica.
 
 | ID | Requerimiento | Módulo |
 |---|---|---|
-| RF-100 | **CLI** completa (15 comandos) | `cli.py` |
+| RF-100 | **CLI** completa (23 comandos) | `cli.py` |
 | RF-101 | **Tablero de escritorio** (Streamlit) con 8 pestañas | `dashboard/app.py` |
 | RF-102 | **Visor web de solo lectura** (FastAPI) para consulta por terceros | `webviewer/app.py` |
 | RF-103 | Pestaña de **unidad de negocio y subestación** | `dashboard/app.py` |
 | RF-104 | Pestaña de **histórico** con comparación de períodos | `dashboard/app.py` |
 | RF-105 | Pestaña de **carga de datos** con registro de alcance y pendientes | `dashboard/app.py` |
 | RF-106 | **Informes HTML + PDF por etapa**, autocontenidos | `report/` |
+| RF-107 | Pestaña de **trabajo de campo**: técnicos, reparto, paquetes y revisión | `dashboard/app.py` |
+
+## 2.12 Trabajo de campo y aplicación móvil
+
+| ID | Requerimiento | Módulo |
+|---|---|---|
+| RF-200 | **Usuarios móviles creados en el backend**, nunca en el dispositivo | `field/workorders.py` |
+| RF-201 | Un usuario, **un dispositivo**: token revocable sin tocar la cuenta | `field/workorders.py` |
+| RF-202 | **Reparto entre varias cuadrillas** equilibrando carga y compacidad geográfica | `field/distribute.py` |
+| RF-203 | **Definición de trabajo** por alimentador, sector, área o lista de cuentas, con 7 tipos de campaña | `field/workdef.py` |
+| RF-204 | **Paquete GeoPackage OGC** autocontenido: red recortada, órdenes, cartografía offline y esquema de formularios | `field/package.py` |
+| RF-205 | **Un paquete por técnico**, con todas sus órdenes; nunca uno por orden | `field/package.py` |
+| RF-206 | Generación de **paquetes en lote** para todo el equipo | `field/package.py` |
+| RF-207 | Edición en campo: **crear, modificar, mover y eliminar** sin conexión | `mobile/` |
+| RF-208 | **Snap y propagación topológica**: mover un cliente arrastra su acometida | `field/topology_edit.py` |
+| RF-209 | La relación **eléctrica no propaga geometría**: mover un transformador no mueve el barrio | `field/topology_edit.py` |
+| RF-210 | **Reconexión del consumidor** (Puesto→Unidad) con recálculo de las dos zonas | `field/schema.py`, `field/sync.py` |
+| RF-211 | **Varias fotografías por elemento** con ubicación, hora, autor y hash | `field/schema.py`, `mobile/` |
+| RF-212 | **Diario de cambios** con antes/después, autor, posición y precisión GPS | `field/schema.py` |
+| RF-213 | **Descarga y subida simultáneas** de varios técnicos sin pérdida de actualizaciones | `field/store.py` |
+| RF-214 | **Trabajos de varios días**: avance parcial sin cerrar la orden, sin reprocesar lo enviado | `field/api.py`, `field/store.py` |
+| RF-215 | **Revisión granular** por el supervisor: aceptar y rechazar cambio a cambio | `field/sync.py` |
+| RF-216 | **Invalidación selectiva**: cada cambio dice qué etapas hay que recalcular | `field/sync.py` |
+| RF-217 | **Histórico permanente** de modificaciones, de archivo y de móvil | `field/sync.py` |
+| RF-218 | Interfaz **adaptativa**: tablet lado a lado, teléfono con hoja deslizante | `mobile/ui/` |
+| RF-219 | Cartografía **offline** desde MBTiles libres o caché de ArcGIS Server, **sin licencias** | `field/package.py`, `mobile/geo/` |
+| RF-220 | Formularios construidos **desde el esquema del paquete**, sin publicar versión de la app | `field/schema.py`, `mobile/data/` |
+| RF-221 | Soporte de **equipos de gama baja**: consulta por ventana, umbral de zoom, tope de elementos | `mobile/ui/MapaCampo.kt` |
+| RF-222 | **Simulador de jornada** para probar el contrato móvil↔backend sin dispositivo | `field/simulator.py` |
 
 ## 2.11 Requerimientos no funcionales
 
@@ -275,6 +304,12 @@ dominio), el **módulo** que lo implementa y la **prueba** que lo verifica.
 | RNF-08 | Todo parámetro numérico en **configuración**, ninguno en el código | `test_config` |
 | RNF-09 | Informes **autocontenidos**, sin recursos externos, con escape de contenido | `test_escenario_costa_reportes` |
 | RNF-10 | Rendimiento: 20 000 clientes × 36 meses en **< 60 s** | `scripts/prueba_costa_20k.py` |
+| RNF-11 | El paquete de campo **no depende de GDAL**: GeoPackage escrito sobre `sqlite3` puro | `field/gpkg.py` |
+| RNF-12 | La app móvil **no usa librerías con licencia** (MapLibre, no ArcGIS) | `mobile/app/build.gradle.kts` |
+| RNF-13 | Android **API 24+**: cubre el parque real de equipos entregados a cuadrillas | `mobile/app/build.gradle.kts` |
+| RNF-14 | Token del dispositivo cifrado en **Keystore** | `mobile/sync/AlmacenSesionCifrado.kt` |
+| RNF-15 | Escrituras concurrentes **transaccionales**: `BEGIN IMMEDIATE` + compare-and-set | `field/store.py` |
+| RNF-16 | Proyección UTM⇄WGS84 con error **< 1 mm**; códec de geometría **byte a byte** idéntico entre Python y Kotlin | `mobile/geo/Utm.kt`, `field/gpkg.py` |
 
 ---
 
@@ -414,6 +449,11 @@ puede saber cuánto vale.
 | `versiones_red.json` | Versiones de topología con sus tres hashes | `topology/versioning.py` |
 | `ubicaciones.json` | Registro de ubicaciones priorizadas y su historia | `survey/locations.py` |
 | `historico_balance.parquet` | Serie temporal del balance por entidad | `store/history.py` |
+| `campo/registro.db` | Usuarios móviles, asignaciones y bitácora (SQLite transaccional) | `field/store.py` |
+| `campo/paquetes/{usuario}.gpkg` | Paquete descargable de cada técnico | `field/package.py` |
+| `campo/entrantes/*.gpkg` | Paquetes de retorno tal como llegaron | `field/api.py` |
+| `campo/lotes/*.json` | Lotes en revisión, con sus hallazgos | `field/api.py` |
+| `campo/historico_cambios.parquet` | Histórico permanente de modificaciones de red | `field/sync.py` |
 
 Están fuera de la base a propósito: sobreviven a un borrado de DuckDB y se pueden
 versionar con el proyecto.
@@ -451,12 +491,44 @@ src/ptnt/
 ├── report/       Informes HTML autocontenidos + gráficos SVG + PDF
 ├── store/        DuckDB + histórico de balance
 ├── security/     Auth (hash), secretos por entorno
+├── field/        Trabajo de campo (ver abajo)
 ├── synth/        Generadores de escenario con verdad conocida
 ├── dashboard/    Tablero Streamlit (8 pestañas)
 ├── webviewer/    Visor FastAPI de solo lectura
 ├── pipeline.py       Orquestador comercial
 ├── grid_pipeline.py  Orquestador de red
 └── cli.py        CLI typer
+```
+
+El módulo de campo, en detalle:
+
+```
+src/ptnt/field/
+├── gpkg.py           GeoPackage OGC nativo sobre sqlite3 (sin GDAL)
+├── schema.py         13 capas, dominios y esquema que consume el móvil
+├── workdef.py        Definición del trabajo: alimentador, sector, área, lista
+├── workorders.py     Usuarios, asignaciones y máquina de estados
+├── store.py          Persistencia transaccional (concurrencia real)
+├── distribute.py     Reparto entre cuadrillas: carga pareja y compacidad
+├── package.py        Armado del paquete: recorte, contexto topológico, teselas
+├── topology_edit.py  Snap y propagación (4 reglas de relación)
+├── simulator.py      Jornada de campo simulada sobre el paquete real
+├── sync.py           Recepción, validación, revisión e invalidación selectiva
+├── api.py            API móvil (FastAPI, 5 endpoints)
+└── demo_red.py       Red de demostración para probar el ciclo sin SIG
+```
+
+Y la aplicación Android:
+
+```
+mobile/app/src/main/java/ec/cnel/ptnt/field/
+├── MainActivity.kt   Actividad única, permisos y cámara del sistema
+├── data/             GeoPackage directo, formularios del manifiesto, repositorio
+├── domain/           Editor topológico y captura de fotos con metadatos
+├── geo/              UTM⇄WGS84, ubicación, servidor local de teselas
+├── sync/             Cliente HTTP y sesión cifrada en Keystore
+├── work/             Subida diferida al recuperar señal
+└── ui/               Compose: vinculación, órdenes, mapa y atributos
 ```
 
 ## 4.2 Flujo de proceso
@@ -511,6 +583,14 @@ src/ptnt/
 | `ptnt dashboard` | Tablero de escritorio |
 | `ptnt servir-visor` | Visor de solo lectura |
 | `ptnt crear-usuario` | Alta de usuario (solo hash) |
+| `ptnt campo-usuario` | Alta de **usuario móvil** |
+| `ptnt campo-definir` | **Define trabajo** sin pasar por el ranking (censo, cartografía, listado) |
+| `ptnt campo-asignar` | Asigna órdenes a **un** técnico |
+| `ptnt campo-repartir` | **Reparte la jornada** entre varias cuadrillas |
+| `ptnt campo-paquete` | Genera el paquete de **un** técnico |
+| `ptnt campo-paquetes` | Genera **todos** los paquetes de una vez |
+| `ptnt campo-servir` | API de sincronización móvil |
+| `ptnt campo-revisar` | Revisa un lote y determina qué recalcular |
 
 ---
 
@@ -536,6 +616,15 @@ incorrectos.
 | 13 | Los no multados **no son negativos** confiables | Modelo entrenado sobre etiquetas falsas |
 | 14 | Ante tarifa no reconocible → `NO_CLASIFICADO`, **no** residencial | Industriales tratados como residenciales |
 | 15 | Series con distinto **hash de configuración** no son comparables | Se atribuye a la red un cambio de parámetros |
+| 16 | La relación **ALIMENTA no propaga geometría** | Un arrastre de dedo reescribe el alimentador entero |
+| 17 | Reconectar es **RECONECTAR**, no MODIFICAR | Solo se recalcularía una zona; la otra queda con energía que ya no le corresponde |
+| 18 | El vínculo anterior se borra **en la misma transacción** que se crea el nuevo | El consumo se contaría en dos zonas a la vez |
+| 19 | Sincronizar **no cierra** las órdenes que el técnico no marcó | Se dan por terminadas visitas que no se hicieron |
+| 20 | Lo ya enviado **no se reprocesa** | El histórico cuenta el mismo cambio tantas veces como días duró la orden |
+| 21 | Se marca lo enviado **después** de la respuesta del servidor | Una subida fallida a mitad perdería esos cambios en silencio |
+| 22 | Un paquete de campo por **técnico**, nunca por orden | Snap roto, elementos duplicados y ediciones en conflicto irresolubles |
+| 23 | Una campaña que no persigue energía lleva **0 en recuperable** | Se la evalúa por kWh, parece inútil y deja de hacerse |
+| 24 | Nada entra al modelo **sin revisión humana** | El trabajo de campo degradaría el SIG en vez de mejorarlo |
 
 ---
 
@@ -566,6 +655,11 @@ Secciones del YAML (`config/base.yaml`):
 | `seguridad` | JWT, ruta de usuarios, redes permitidas, intentos de login |
 | `dashboard` / `visor` | Puertos y hosts |
 
+El trabajo de campo no añade parámetros al YAML: sus umbrales operativos
+—tolerancia de snap, tope de propagación, tamaño de paquete— viajan en el
+**manifiesto del paquete**, para que el móvil los reciba sin publicar una versión
+nueva de la aplicación.
+
 **Regla:** ningún valor numérico del dominio está escrito en el código. Un
 parámetro nuevo se agrega al modelo pydantic **y** al YAML; una clave desconocida
 hace fallar el arranque.
@@ -583,6 +677,13 @@ hace fallar el arranque.
 | Repositorio | Prueba que **falla la CI** si aparece `password:` en el YAML |
 | Informes | Escape del contenido de la base de origen antes de insertarlo en HTML |
 | Datos sensibles | Los objetivos de campo identifican predios: el visor exige autenticación |
+| Usuarios móviles | Se crean **solo** en el backend; no hay registro desde la app |
+| Token de dispositivo | Uno por usuario; vincular otro equipo revoca el anterior |
+| Pérdida del equipo | Se revoca el token sin tocar la cuenta ni la contraseña del técnico |
+| Sesión en el teléfono | `EncryptedSharedPreferences` respaldado por Keystore; si falla, se avisa en vez de fingir cifrado |
+| Paquete en el dispositivo | Almacenamiento privado de la app: no aparece en la galería ni para otras aplicaciones |
+| Atribución | Todo cambio lleva autor, instante y posición; sin autor el lote se bloquea |
+| Evidencia fotográfica | Hash SHA-256 en la captura para detectar sustitución del archivo |
 
 ---
 
@@ -594,6 +695,8 @@ hace fallar el arranque.
 | Integración | `integration` | Pipeline comercial, de red y focalización de punta a punta |
 | Seguridad | `security` | Auth, secretos, visor, ausencia de credenciales |
 | Propiedades | hypothesis | `S ≥ P`, `FC(1)=1`, FC monótona y acotada, `F_c² ≤ F_p ≤ F_c` |
+| Campo | `unit` / `integration` | GeoPackage, edición topológica, concurrencia, reparto, reconexión, jornadas de varios días |
+| Contrato móvil↔backend | `integration` | Lo que la app escribe, el backend lo lee y lo entiende (vía `field/simulator.py`) |
 
 **Escenarios con verdad conocida:**
 
@@ -604,10 +707,19 @@ hace fallar el arranque.
 | `synth/escenario_costa.py` | 20 000 clientes | Prueba a escala, 12 alimentadores, informes PDF |
 
 ```bash
-pytest                                  # 290 pruebas
-python scripts/demo_completa.py         # demo de 9 pasos
-python scripts/prueba_costa_20k.py      # prueba a escala con PDF, ~55 s
+pytest                                    # 380 pruebas
+python scripts/demo_completa.py           # análisis, 9 pasos
+python scripts/demo_ciclo_completo.py     # CICLO ENTERO, 15 etapas, 22 comprobaciones
+python scripts/demo_campo_multiusuario.py # despacho a 3 cuadrillas
+python scripts/prueba_costa_20k.py        # escala: 20 000 clientes con PDF, ~55 s
+cd mobile && ./gradlew test               # proyección y códec de la app Android
 ```
+
+`demo_ciclo_completo.py` recorre el proceso entero sin datos preparados: cada
+etapa consume lo que produjo la anterior, desde generar el padrón sintético hasta
+recalcular tras las correcciones que volvieron del campo. **Cada etapa verifica
+lo suyo** —una demostración que solo imprime no demuestra nada— y el guion
+termina con código de salida distinto de cero si alguna comprobación falla.
 
 ---
 
@@ -619,7 +731,7 @@ python scripts/prueba_costa_20k.py      # prueba a escala con PDF, ~55 s
 | **Mecanismo de promedio** multi-mes | RF-10…RF-12 | ✅ |
 | Identificar clientes con **hurto** | S1–S9, RF-30…RF-32 | ✅ |
 | Arquitectura, implementación Windows, proceso | `docs/ARQUITECTURA.md`, `INSTALACION_WINDOWS.md`, `PROCESO.md` | ✅ |
-| **Documentado** + pruebas de integración y seguridad | 290 pruebas, 11 documentos | ✅ |
+| **Documentado** + pruebas de integración y seguridad | 380 pruebas, 13 documentos | ✅ |
 | **Interfaz web** para escritorio y para terceros | RF-101, RF-102 | ✅ |
 | Esquema **Puesto → Unidad** | RF-40, §3.1 | ✅ |
 | **CLIRLSCOD** como agrupador | RF-23, RF-73 | ✅ |
@@ -648,6 +760,25 @@ python scripts/prueba_costa_20k.py      # prueba a escala con PDF, ~55 s
 | **Carga parcial** de información | RF-08, RF-105 | ✅ |
 | **Dashboard histórico** | RF-90…RF-94, RF-104 | ✅ |
 | Ver por **unidad de negocio y subestación** | RF-80…RF-84, RF-103 | ✅ |
+| **Aplicación móvil** para llevar el trabajo al campo | RF-200…RF-222 | ✅ |
+| Órdenes con **múltiples trabajos asignables** | RF-202, RF-206 | ✅ |
+| Interfaz web para **asignar a varios usuarios** | RF-107, RF-202 | ✅ |
+| Descargar trabajo y cartografía para trabajar **offline** | RF-204, RF-219 | ✅ |
+| Crear, modificar (atributos y ubicación) y eliminar en campo | RF-207 | ✅ |
+| **Snap**: mover un cliente mueve la red conectada | RF-208, RF-209 | ✅ |
+| Modificar **elementos relacionados** (Puesto→Unidad) | RF-210 | ✅ |
+| Conocer **todos los cambios** al subir, y recalcular si se aceptan | RF-212, RF-215, RF-216 | ✅ |
+| Cartografía **open source o de ArcGIS Server** | RF-219 | ✅ |
+| **Histórico** de modificaciones de archivo y de móvil | RF-217 | ✅ |
+| Volver a decir **dónde revisar** y recalcular el ranking | RF-216 | ✅ |
+| Usuarios móviles generados en el **backend Python** | RF-200 | ✅ |
+| Óptimo para **GeoPackage** y equipos de bajo procesamiento | RF-204, RF-221 | ✅ |
+| Tablet **gráfico + atributos**; teléfono con transición | RF-218 | ✅ |
+| **Varias fotos** por elemento con ubicación, hora y fecha | RF-211 | ✅ |
+| **Varios usuarios** descargando y subiendo a la vez | RF-213 | ✅ |
+| Trabajo de **varios días** hasta terminarlo | RF-214 | ✅ |
+| Definir el trabajo **más allá de lo peor** del ranking | RF-203 | ✅ |
+| Editar la **conexión del consumidor** en campo | RF-210 | ✅ |
 
 ---
 
@@ -671,12 +802,22 @@ Lo que el sistema **no** hace, dicho explícitamente para que nadie lo suponga:
    consolidados por subestación no son utilizables.
 6. **La detección de transferencias requiere ≥ 3 períodos** de energía de
    cabecera.
+7. **La aplicación Android no tiene pruebas instrumentadas en dispositivo.** El
+   render, los permisos y el comportamiento del GPS bajo cobertura real solo se
+   comprueban en la calle. Lo que sí está verificado de forma independiente es
+   donde un error pasa inadvertido: la proyección (< 1 mm de ida y vuelta) y el
+   códec binario (idéntico byte a byte entre Python y Kotlin).
+8. **El paquete de campo no sube fotografías como archivo binario**: viajan sus
+   metadatos y su hash. Adjuntar los JPEG multiplicaría el tamaño del retorno; el
+   archivo se transfiere aparte cuando el caso llega a proceso administrativo.
+9. **La aplicación no rastrea el recorrido del técnico.** Es una decisión
+   laboral, no técnica, y no corresponde a esta herramienta.
 
 ---
 
 Ver también: [Arquitectura](ARQUITECTURA.md) · [Proceso](PROCESO.md) ·
 [Guía de operación](GUIA_OPERACION.md) · [Segmentación](SEGMENTACION.md) ·
 [Focalización](FOCALIZACION.md) · [Diagnóstico](DIAGNOSTICO.md) ·
-[Red eléctrica](RED_ELECTRICA.md) · [Prueba a escala](PRUEBA_COSTA_20K.md) ·
-[Seguridad](SEGURIDAD.md) · [Pruebas](PRUEBAS.md) ·
-[Instalación en Windows](INSTALACION_WINDOWS.md)
+[Red eléctrica](RED_ELECTRICA.md) · [Aplicación móvil](APLICACION_MOVIL.md) ·
+[Prueba a escala](PRUEBA_COSTA_20K.md) · [Seguridad](SEGURIDAD.md) ·
+[Pruebas](PRUEBAS.md) · [Instalación en Windows](INSTALACION_WINDOWS.md)
