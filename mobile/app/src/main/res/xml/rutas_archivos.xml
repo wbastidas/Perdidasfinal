@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Solo el directorio de fotos: la cámara del sistema recibe permiso para
+         escribir ahí y en ningún otro sitio. El GeoPackage no se expone. -->
+    <files-path name="fotos" path="fotos/" />
+    <cache-path name="temporal" path="camara/" />
+</paths>

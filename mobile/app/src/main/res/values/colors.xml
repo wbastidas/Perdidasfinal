@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Paleta de alto contraste. Se trabaja a pleno sol de la costa: los grises
+      suaves de Material por defecto son ilegibles al mediodía en Guayaquil.
+    -->
+    <color name="primario">#0B5FA5</color>
+    <color name="primario_oscuro">#083E6C</color>
+    <color name="acento">#E8A317</color>
+    <color name="fondo">#F5F7FA</color>
+</resources>

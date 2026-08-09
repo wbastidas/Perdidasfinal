@@ -408,25 +408,33 @@ def _adjuntar_teselas(gp: GeoPackage, origen: Path, area: AreaTrabajo) -> int:
     src = sqlite3.connect(origen)
     src.row_factory = sqlite3.Row
     n = 0
+    zooms: set[int] = set()
     try:
         filas = src.execute(
             "SELECT zoom_level, tile_column, tile_row, tile_data FROM tiles")
         lote = []
-        for t in filas:
-            lote.append((t["zoom_level"], t["tile_column"], t["tile_row"],
-                         t["tile_data"]))
-            if len(lote) >= 500:
-                gp.con.executemany(
-                    "INSERT OR REPLACE INTO cartografia "
-                    "(zoom_level, tile_column, tile_row, tile_data) VALUES (?,?,?,?)",
-                    lote)
-                n += len(lote)
-                lote = []
-        if lote:
+
+        def volcar(lote):
             gp.con.executemany(
                 "INSERT OR REPLACE INTO cartografia "
                 "(zoom_level, tile_column, tile_row, tile_data) VALUES (?,?,?,?)",
                 lote)
+
+        for t in filas:
+            z = int(t["zoom_level"])
+            zooms.add(z)
+            # MBTiles numera las filas desde el sur (TMS); GeoPackage y las URLs
+            # XYZ las numeran desde el norte. Sin voltear aquí, la cartografía
+            # sale espejada verticalmente: el barrio correcto en el sitio
+            # equivocado, que es peor que no tener fondo.
+            fila_gpkg = (1 << z) - 1 - int(t["tile_row"])
+            lote.append((z, int(t["tile_column"]), fila_gpkg, t["tile_data"]))
+            if len(lote) >= 500:
+                volcar(lote)
+                n += len(lote)
+                lote = []
+        if lote:
+            volcar(lote)
             n += len(lote)
     except sqlite3.OperationalError:
         return 0
@@ -434,18 +442,108 @@ def _adjuntar_teselas(gp: GeoPackage, origen: Path, area: AreaTrabajo) -> int:
         src.close()
 
     if n:
-        env = area.envolvente() or (0, 0, 0, 0)
+        # Las teselas de un MBTiles (o de una caché de ArcGIS Server) están en
+        # Web Mercator, no en la proyección de la red. Declararlas en UTM haría
+        # que QGIS las dibujara en otro continente.
+        _registrar_srs_web_mercator(gp)
         gp.con.execute(
             "INSERT OR REPLACE INTO gpkg_tile_matrix_set VALUES (?,?,?,?,?,?)",
-            ("cartografia", SRID_UTM17S, *env))
+            ("cartografia", SRID_WEB_MERCATOR,
+             -_SEMI_MUNDO_M, -_SEMI_MUNDO_M, _SEMI_MUNDO_M, _SEMI_MUNDO_M))
+        # Una capa de teselas sin filas en gpkg_tile_matrix es un GeoPackage
+        # inválido: el lector no sabe qué resolución tiene cada nivel y no
+        # dibuja nada.
+        for z in sorted(zooms):
+            lado = 1 << z
+            px = 2 * _SEMI_MUNDO_M / (lado * _TESELA_PX)
+            gp.con.execute(
+                "INSERT OR REPLACE INTO gpkg_tile_matrix VALUES (?,?,?,?,?,?,?,?)",
+                ("cartografia", z, lado, lado, _TESELA_PX, _TESELA_PX, px, px))
+        env = area.envolvente() or (0, 0, 0, 0)
         gp.con.execute(
             "INSERT OR REPLACE INTO gpkg_contents "
-            "(table_name, data_type, identifier, description, srs_id) "
-            "VALUES (?,?,?,?,?)",
+            "(table_name, data_type, identifier, description, srs_id, "
+            " min_x, min_y, max_x, max_y) VALUES (?,?,?,?,?,?,?,?,?)",
             ("cartografia", "tiles", "cartografia",
-             "Cartografía base offline", SRID_UTM17S))
+             "Cartografía base offline", SRID_WEB_MERCATOR,
+             *_a_web_mercator(env)))
         gp.con.commit()
     return n
+
+
+# Web Mercator: media anchura del mundo proyectado, y lado de tesela estándar.
+SRID_WEB_MERCATOR = 3857
+_SEMI_MUNDO_M = 20_037_508.342789244
+_TESELA_PX = 256
+
+
+def _registrar_srs_web_mercator(gp: GeoPackage) -> None:
+    gp.con.execute(
+        "INSERT OR IGNORE INTO gpkg_spatial_ref_sys VALUES (?,?,?,?,?,?)",
+        ("WGS 84 / Pseudo-Mercator", SRID_WEB_MERCATOR, "EPSG",
+         SRID_WEB_MERCATOR,
+         'PROJCS["WGS 84 / Pseudo-Mercator",GEOGCS["WGS 84",DATUM["WGS_1984",'
+         'SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],'
+         'UNIT["degree",0.0174532925199433]],PROJECTION["Mercator_1SP"],'
+         'PARAMETER["central_meridian",0],PARAMETER["scale_factor",1],'
+         'PARAMETER["false_easting",0],PARAMETER["false_northing",0],'
+         'UNIT["metre",1]]',
+         "Web Mercator: proyección de las teselas base"))
+
+
+def _a_web_mercator(env_utm) -> tuple[float, float, float, float]:
+    """Envolvente del área de trabajo, en las unidades de las teselas."""
+
+    def uno(x: float, y: float) -> tuple[float, float]:
+        lat, lon = _utm17s_a_latlon(x, y)
+        mx = math.radians(lon) * 6_378_137.0
+        my = math.log(math.tan(math.pi / 4 + math.radians(lat) / 2)) * 6_378_137.0
+        return mx, my
+
+    x0, y0, x1, y1 = env_utm
+    if x1 <= x0 or y1 <= y0:
+        return (-_SEMI_MUNDO_M, -_SEMI_MUNDO_M, _SEMI_MUNDO_M, _SEMI_MUNDO_M)
+    esquinas = [uno(x0, y0), uno(x1, y0), uno(x0, y1), uno(x1, y1)]
+    xs = [p[0] for p in esquinas]
+    ys = [p[1] for p in esquinas]
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def _utm17s_a_latlon(este: float, norte: float) -> tuple[float, float]:
+    """Inversa de la transversa de Mercator para UTM 17S (serie de Snyder)."""
+
+    a = 6_378_137.0
+    f = 1 / 298.257_223_563
+    e2 = f * (2 - f)
+    ep2 = e2 / (1 - e2)
+    k0 = 0.9996
+
+    y = norte - 10_000_000.0
+    x = este - 500_000.0
+    m = y / k0
+    mu = m / (a * (1 - e2 / 4 - 3 * e2**2 / 64 - 5 * e2**3 / 256))
+    e1 = (1 - math.sqrt(1 - e2)) / (1 + math.sqrt(1 - e2))
+    phi1 = (mu
+            + (3 * e1 / 2 - 27 * e1**3 / 32) * math.sin(2 * mu)
+            + (21 * e1**2 / 16 - 55 * e1**4 / 32) * math.sin(4 * mu)
+            + (151 * e1**3 / 96) * math.sin(6 * mu)
+            + (1097 * e1**4 / 512) * math.sin(8 * mu))
+    s, c = math.sin(phi1), math.cos(phi1)
+    c1 = ep2 * c * c
+    t1 = math.tan(phi1) ** 2
+    n1 = a / math.sqrt(1 - e2 * s * s)
+    r1 = a * (1 - e2) / (1 - e2 * s * s) ** 1.5
+    d = x / (n1 * k0)
+    lat = phi1 - (n1 * math.tan(phi1) / r1) * (
+        d**2 / 2
+        - (5 + 3 * t1 + 10 * c1 - 4 * c1**2 - 9 * ep2) * d**4 / 24
+        + (61 + 90 * t1 + 298 * c1 + 45 * t1**2 - 252 * ep2 - 3 * c1**2)
+        * d**6 / 720)
+    lon = math.radians(-81.0) + (
+        d - (1 + 2 * t1 + c1) * d**3 / 6
+        + (5 - 2 * c1 + 28 * t1 - 3 * c1**2 + 8 * ep2 + 24 * t1**2)
+        * d**5 / 120) / c
+    return math.degrees(lat), math.degrees(lon)
 
 
 def huella_paquete(ruta: str | Path) -> str:

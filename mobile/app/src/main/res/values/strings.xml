@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PTNT-BAL Campo</string>
+
+    <!-- Vinculación -->
+    <string name="vincular_titulo">Vincular este equipo</string>
+    <string name="vincular_ayuda">El usuario lo crea el administrador en el
+        sistema. Al vincular, este teléfono queda asociado a su cuenta; si lo
+        pierde, avise para que se revoque.</string>
+    <string name="usuario">Usuario</string>
+    <string name="password">Contraseña</string>
+    <string name="servidor">Servidor</string>
+    <string name="vincular">Vincular</string>
+
+    <!-- Órdenes -->
+    <string name="ordenes_titulo">Mi trabajo</string>
+    <string name="descargar_trabajo">Descargar trabajo</string>
+    <string name="sincronizar">Sincronizar</string>
+    <string name="sin_ordenes">No hay trabajo descargado. Conéctese y toque
+        «Descargar trabajo».</string>
+
+    <!-- Campo -->
+    <string name="buscar">Buscar</string>
+    <string name="capas">Capas</string>
+    <string name="mi_ubicacion">Mi ubicación</string>
+    <string name="tomar_foto">Tomar foto</string>
+    <string name="guardar">Guardar</string>
+    <string name="cancelar">Cancelar</string>
+    <string name="mover_aqui">Mover aquí</string>
+    <string name="eliminar">Eliminar</string>
+    <string name="relacionados">Relacionados</string>
+    <string name="fotos">Fotos</string>
+    <string name="atributos">Atributos</string>
+
+    <!-- Permisos -->
+    <string name="permiso_ubicacion">Sin ubicación no se puede registrar dónde se
+        hizo el trabajo. Concédala para continuar.</string>
+    <string name="permiso_camara">Se necesita la cámara para adjuntar evidencia
+        fotográfica.</string>
+</resources>

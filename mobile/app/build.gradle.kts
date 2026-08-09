@@ -53,6 +53,8 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
     implementation("androidx.activity:activity-compose:1.9.2")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.6")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
@@ -65,10 +67,11 @@ dependencies {
     // EXIF: metadatos de ubicación y fecha en las fotografías.
     implementation("androidx.exifinterface:exifinterface:1.3.7")
 
-    // Cámara
-    implementation("androidx.camera:camera-camera2:1.3.4")
-    implementation("androidx.camera:camera-lifecycle:1.3.4")
-    implementation("androidx.camera:camera-view:1.3.4")
+    // No se incluye CameraX: la captura la hace la app de cámara del sistema,
+    // que ya trae enfoque, HDR y estabilización ajustados a cada sensor.
+    // Reimplementarla daría fotos peores en medio parque de equipos y sumaría
+    // megabytes al APK. Lo propio —ubicación, hora, autor y hash— se escribe
+    // después sobre el archivo devuelto.
 
     // Ubicación
     implementation("com.google.android.gms:play-services-location:21.3.0")
@@ -87,6 +90,7 @@ dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.2")
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation(composeBom)
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")

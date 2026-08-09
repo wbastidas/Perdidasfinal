@@ -342,3 +342,69 @@ def test_el_almacen_no_acepta_ordenes_de_un_usuario_inexistente(tmp_path):
     with pytest.raises(sqlite3.IntegrityError):
         almacen.asignar_lote([{"orden_trabajo": "OT-1", "guid": "g",
                                "asignado_a": "fantasma", "estado": "ASIGNADA"}])
+
+
+# --------------------------------------------------------------------------- #
+# Cartografía offline
+# --------------------------------------------------------------------------- #
+def _mbtiles(ruta, teselas):
+    """MBTiles mínimo: tabla `tiles` con numeración TMS, como el estándar."""
+
+    import sqlite3
+
+    con = sqlite3.connect(ruta)
+    con.execute("CREATE TABLE tiles (zoom_level INTEGER, tile_column INTEGER, "
+                "tile_row INTEGER, tile_data BLOB)")
+    con.executemany("INSERT INTO tiles VALUES (?,?,?,?)", teselas)
+    con.commit()
+    con.close()
+    return ruta
+
+
+@pytest.mark.unit
+def test_las_teselas_se_guardan_con_el_origen_correcto(tmp_path):
+    """MBTiles numera desde el sur y las URLs XYZ desde el norte.
+
+    Sin voltear la fila, la cartografía sale espejada verticalmente: el barrio
+    correcto dibujado en el sitio equivocado, que es peor que no tener fondo.
+    """
+
+    import sqlite3
+
+    from ptnt.field import construir_paquete
+
+    origen = _mbtiles(tmp_path / "base.mbtiles",
+                      [(14, 4000, 7000, b"PNG-A"), (14, 4001, 7000, b"PNG-B")])
+
+    reg = _registro(tmp_path, ["ana"])
+    reg.asignar(_ordenes(2), "ana")
+    from ptnt.field.demo_red import red_de_demostracion
+    capas, conexiones = red_de_demostracion(reg.de_usuario("ana"))
+
+    res = construir_paquete(tmp_path / "p.gpkg", usuario="ana",
+                            asignaciones=reg.de_usuario("ana"), red=capas,
+                            conexiones=conexiones, teselas=origen)
+    assert res.teselas == 2
+
+    con = sqlite3.connect(tmp_path / "p.gpkg")
+    con.row_factory = sqlite3.Row
+    filas = con.execute(
+        "SELECT zoom_level, tile_column, tile_row FROM cartografia "
+        "ORDER BY tile_column").fetchall()
+    esperada = (1 << 14) - 1 - 7000
+    assert [r["tile_row"] for r in filas] == [esperada, esperada]
+
+    # La capa de teselas debe declararse en Web Mercator, no en la proyección de
+    # la red: si no, QGIS la dibuja en otro continente.
+    tms = con.execute("SELECT * FROM gpkg_tile_matrix_set "
+                      "WHERE table_name = 'cartografia'").fetchone()
+    assert tms["srs_id"] == 3857
+
+    # Y sin filas en gpkg_tile_matrix el GeoPackage es inválido: el lector no
+    # sabe qué resolución tiene cada nivel y no dibuja nada.
+    matriz = con.execute("SELECT * FROM gpkg_tile_matrix "
+                         "WHERE table_name = 'cartografia'").fetchall()
+    assert [m["zoom_level"] for m in matriz] == [14]
+    assert matriz[0]["matrix_width"] == 1 << 14
+    assert matriz[0]["tile_width"] == 256
+    con.close()

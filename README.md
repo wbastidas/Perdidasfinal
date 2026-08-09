@@ -226,7 +226,7 @@ pytest -m security      # auth, secretos, visor
 pytest --cov=ptnt       # cobertura
 ```
 
-**358 pruebas** en verde. Detalle de qué cubre cada archivo y los resultados de la
+**359 pruebas** en verde (más las pruebas JVM de la app Android, en `mobile/`). Detalle de qué cubre cada archivo y los resultados de la
 demostración extremo a extremo en [`docs/PRUEBAS.md`](docs/PRUEBAS.md).
 
 ## Alcance de esta entrega

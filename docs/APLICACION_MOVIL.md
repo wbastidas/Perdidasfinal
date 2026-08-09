@@ -455,14 +455,66 @@ mobile/
 ├── settings.gradle.kts
 ├── build.gradle.kts
 └── app/
-    ├── build.gradle.kts
-    └── src/main/java/ec/cnel/ptnt/field/
-        ├── data/GeoPackageDao.kt        acceso SQLite directo + códec GeoPackage
-        ├── domain/EditorTopologico.kt   snap, propagación, diario de cambios
-        ├── domain/CapturaFoto.kt        EXIF, ubicación, hash
-        ├── sync/ClienteSincronizacion.kt descarga y subida
-        └── ui/PantallaCampo.kt         composición adaptativa tablet/teléfono
+    ├── build.gradle.kts            minSdk 24, R8 + reducción de recursos
+    ├── proguard-rules.pro
+    └── src/
+        ├── main/
+        │   ├── AndroidManifest.xml
+        │   ├── res/                 cadenas, tema de arranque, icono vectorial
+        │   └── java/ec/cnel/ptnt/field/
+        │       ├── MainActivity.kt              actividad única, permisos, cámara
+        │       ├── data/GeoPackageDao.kt        SQLite directo + códec GeoPackage
+        │       ├── data/EsquemaFormulario.kt    formularios leídos del manifiesto
+        │       ├── data/RepositorioCampo.kt     ciclo de vida del paquete abierto
+        │       ├── domain/EditorTopologico.kt   snap, propagación, diario
+        │       ├── domain/CapturaFoto.kt        EXIF, ubicación, hash
+        │       ├── geo/Utm.kt                   UTM 17S ⇄ WGS84
+        │       ├── geo/ProveedorUbicacion.kt    GPS con precisión a la vista
+        │       ├── geo/ServidorTeselas.kt       cartografía offline por loopback
+        │       ├── sync/ClienteSincronizacion.kt   descarga y subida
+        │       ├── sync/AlmacenSesionCifrado.kt    token en Keystore
+        │       ├── work/TrabajadorSincronizacion.kt subida al recuperar señal
+        │       └── ui/
+        │           ├── CampoViewModel.kt        estado de la jornada
+        │           ├── Tema.kt                  alto contraste, tipografía grande
+        │           ├── PantallaVinculacion.kt   alta del equipo
+        │           ├── PantallaOrdenes.kt       «¿qué me toca hoy?»
+        │           ├── PantallaCampo.kt         adaptativa tablet/teléfono
+        │           ├── PantallaTrabajo.kt       mapa + atributos + cierre
+        │           ├── MapaCampo.kt             MapLibre, consulta por ventana
+        │           └── PanelAtributos.kt        formulario, relacionados, fotos
+        └── test/java/ec/cnel/ptnt/field/
+            ├── UtmTest.kt                      proyección y ida y vuelta
+            └── GeometriaTest.kt                contrato binario con el backend
 ```
+
+### Compilar
+
+```bash
+cd mobile
+./gradlew assembleDebug        # APK de pruebas
+./gradlew test                 # pruebas JVM (proyección y códec)
+./gradlew assembleRelease      # APK firmado, con R8
+```
+
+El APK sale en `app/build/outputs/apk/`. No hace falta clave de ArcGIS ni de
+ningún proveedor de mapas: las teselas viajan dentro del paquete de trabajo.
+
+### Dos piezas que sostienen todo lo demás
+
+**Proyección.** La red está en UTM 17S —así se levantó y así se calculan las
+longitudes en metros— y MapLibre dibuja en latitud/longitud. Convertir en el
+servidor no serviría: en campo se edita sin señal y cada arrastre de dedo produce
+una coordenada nueva. `geo/Utm.kt` implementa la serie de Snyder para una zona y
+una elipsoide, en vez de traer proj4j con sus tablas. Error de ida y vuelta
+medido: **menos de 1 mm**, tres órdenes de magnitud por debajo del GPS del
+teléfono.
+
+**Códec de geometría.** Lo que el móvil escribe tiene que ser exactamente lo que
+Python lee. Se verificó que ambos productores generan el **mismo binario byte a
+byte** para punto y línea, y que cada uno lee lo del otro. Un error aquí no da
+un fallo visible: da elementos desplazados después de sincronizar, cuando el
+técnico ya no está en el sitio.
 
 **Dependencias clave** (todas libres): MapLibre GL Native, AndroidX
 ExifInterface, CameraX, OkHttp, Security-Crypto, WorkManager.
@@ -492,14 +544,23 @@ Leyendo el esquema del propio archivo, la app se adapta sola.
 | API móvil (FastAPI) | **Completa y probada con varios usuarios a la vez** |
 | Interfaz web de asignación y revisión | **Completa** |
 | CLI de campo (7 comandos) | **Completa** |
-| Kotlin: DAO, editor, fotos, sync, UI adaptativa | **Núcleo implementado** |
-| Kotlin: integración MapLibre, cámara, pantallas completas | **Pendiente** |
+| Kotlin: DAO, editor topológico, fotos, sincronización | **Completo** |
+| Kotlin: proyección UTM y códec de geometría | **Completo y probado** (contrato verificado contra Python) |
+| Kotlin: pantallas (vinculación, órdenes, mapa, atributos) | **Completas** |
+| Kotlin: MapLibre con cartografía offline del paquete | **Completo** |
+| Kotlin: fotos con ubicación, hora y hash | **Completo** |
+| Kotlin: subida diferida al recuperar señal | **Completa** |
+| Pruebas instrumentadas en dispositivo | **Pendiente** |
 
-El backend y el contrato de datos están terminados y probados. Del lado Android
-están escritos los módulos que concentran la dificultad —acceso GeoPackage, códec
-de geometría, motor topológico, metadatos de foto, cliente de sincronización y
-composición adaptativa—; falta el cableado de pantallas, la integración con
-MapLibre y CameraX, y las pruebas instrumentadas en dispositivo.
+El backend, el contrato de datos y la aplicación Android están escritos: el ciclo
+completo —vincular, descargar, trabajar sin señal, editar con snap y propagación,
+fotografiar con evidencia, cerrar la orden y sincronizar— está implementado.
+
+Lo que falta es lo que **no se puede hacer sin equipos reales**: las pruebas
+instrumentadas en dispositivo. La proyección y el códec binario, que son las
+piezas donde un error pasa inadvertido, sí están verificados de forma
+independiente; el render, los permisos y el comportamiento del GPS bajo cobertura
+real solo se pueden comprobar en la calle.
 
 ---
 
