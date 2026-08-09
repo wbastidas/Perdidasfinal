@@ -330,6 +330,50 @@ flujo:
   max_iteraciones: 100
 
 # -----------------------------------------------------------------------------
+# Recursos del equipo
+# -----------------------------------------------------------------------------
+# Todo se detecta solo. Estos parámetros existen para el caso en que el servidor
+# COMPARTE con otro servicio y hay que dejarle sitio.
+#
+# La restricción que manda casi siempre es la MEMORIA, no los núcleos: un
+# alimentador urbano ocupa cientos de MB mientras se resuelve el flujo, y
+# dieciséis a la vez en un equipo de 16 GB no dan dieciséis veces la velocidad,
+# dan swap — y con swap el lote tarda más que en secuencial.
+#
+# Ver cuánto cabe en este equipo:  ptnt recursos
+# Medir el coste real:             ptnt recursos --medir
+recursos:
+  # Vacío = todos los núcleos utilizables (respetando cpuset en contenedores).
+  cpus: null
+  # Tope absoluto por encima de lo que diga el cálculo. 0 = sin tope.
+  max_trabajadores: 0
+
+  # Lo que NUNCA se toca: sistema operativo, base de datos y la API móvil, que
+  # debe seguir respondiendo mientras se recalcula un lote.
+  ram_reservada_mb: 2048
+  fraccion_ram_utilizable: 0.75
+
+  # Memoria pico por alimentador. Se MIDE con `ptnt recursos --medir`, no se
+  # adivina: ponerlo bajo hace que el sistema lance de más y acabe paginando.
+  coste_mb_por_tarea: 512
+
+  max_en_cola: 0          # 0 = sin tope; se procesa todo, por lotes
+  espera_maxima_s: 30.0   # cuánto espera una tarea a que se libere memoria
+
+  # --- concurrencia de la API móvil ---
+  # Lo que no cabe espera en cola; si la cola se llena, 503 + Retry-After.
+  descargas_simultaneas: 4
+  subidas_simultaneas: 2  # menos: abrir y recorrer un GeoPackage cuesta más
+  max_en_cola_api: 32
+
+  # --- lectura de bases de origen ---
+  # Once unidades de negocio se leen en paralelo. `max_por_fuente` evita agotar
+  # las sesiones de una misma instancia: pasarse no acelera, hace que el DBA
+  # corte el acceso.
+  lecturas_simultaneas: 6
+  max_por_fuente: 2
+
+# -----------------------------------------------------------------------------
 # Seguridad
 # -----------------------------------------------------------------------------
 seguridad:

@@ -340,6 +340,57 @@ class HistoricoConfig(_Strict):
 
 
 # ---------------------------------------------------------------------------
+# Recursos del equipo
+# ---------------------------------------------------------------------------
+class RecursosConfig(_Strict):
+    """Cuánto del equipo puede usar la plataforma, y qué hace con el resto.
+
+    Todo se detecta solo. Estos parámetros existen para el caso en que el
+    servidor **comparte** con otro servicio y hay que dejarle sitio: fijar
+    ``cpus`` o ``max_trabajadores`` acota el consumo por debajo de lo que el
+    equipo daría.
+
+    La restricción que manda casi siempre es la **memoria**, no los núcleos: un
+    alimentador urbano ocupa cientos de megabytes mientras se resuelve el flujo,
+    y dieciséis a la vez en un equipo de 16 GB no dan dieciséis veces la
+    velocidad, dan *swap*.
+    """
+
+    # Vacío = todos los núcleos utilizables del equipo (respetando cpuset).
+    cpus: int | None = Field(None, ge=1)
+    # Tope absoluto de tareas simultáneas, por encima de lo que diga el cálculo.
+    max_trabajadores: int = Field(0, ge=0)
+
+    # Lo que NUNCA se toca: sistema operativo, base de datos y la API móvil, que
+    # debe seguir respondiendo mientras se recalcula un lote. Sin esta reserva,
+    # un recálculo pesado deja a las cuadrillas sin poder descargar su trabajo.
+    ram_reservada_mb: int = Field(2048, ge=256)
+    fraccion_ram_utilizable: float = Field(0.75, gt=0.0, le=1.0)
+
+    # Memoria pico estimada por alimentador. Se mide con `ptnt recursos --medir`
+    # sobre un caso real y se ajusta aquí; no se adivina.
+    coste_mb_por_tarea: int = Field(512, ge=32)
+
+    # Tope de la cola de cálculo. 0 = sin tope (se procesa todo, por lotes).
+    max_en_cola: int = Field(0, ge=0)
+    # Cuánto espera una tarea a que se libere memoria antes de arrancar igual.
+    espera_maxima_s: float = Field(30.0, gt=0.0)
+
+    # --- concurrencia de la API móvil ---
+    descargas_simultaneas: int = Field(4, ge=1)
+    # Menos que descargas a propósito: abrir y recorrer un GeoPackage de retorno
+    # cuesta mucho más que servir un archivo ya construido.
+    subidas_simultaneas: int = Field(2, ge=1)
+    max_en_cola_api: int = Field(32, ge=0)
+
+    # --- lectura de bases de origen ---
+    # Once unidades de negocio se leen en paralelo, pero cada base tiene su
+    # límite de sesiones: pasarse no acelera, hace que el DBA corte el acceso.
+    lecturas_simultaneas: int = Field(6, ge=1)
+    max_por_fuente: int = Field(2, ge=1)
+
+
+# ---------------------------------------------------------------------------
 # Seguridad
 # ---------------------------------------------------------------------------
 class SecurityConfig(_Strict):
@@ -529,6 +580,7 @@ class AppConfig(_Strict):
     balance: BalanceConfig = Field(default_factory=BalanceConfig)
     cargabilidad: CargabilidadConfig = Field(default_factory=CargabilidadConfig)
     flujo: FlujoConfig = Field(default_factory=FlujoConfig)
+    recursos: RecursosConfig = Field(default_factory=RecursosConfig)
     seguridad: SecurityConfig = Field(default_factory=SecurityConfig)
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
     visor: WebviewerConfig = Field(default_factory=WebviewerConfig)

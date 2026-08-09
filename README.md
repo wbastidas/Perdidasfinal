@@ -69,6 +69,7 @@ datos de la red (esquema **Puesto → Unidad** homologado CNEL EP):
 > **[Prueba a escala — 20 000 clientes](docs/PRUEBA_COSTA_20K.md)** ·
 > **[Aplicación móvil de campo](docs/APLICACION_MOVIL.md)** ·
 > **[El ciclo completo](docs/CICLO_COMPLETO.md)** ·
+> **[Recursos y paralelismo](docs/RECURSOS.md)** ·
 > [Focalización de levantamientos](docs/FOCALIZACION.md) ·
 > [Diagnóstico y validación](docs/DIAGNOSTICO.md) ·
 > [Proceso](docs/PROCESO.md) · [Seguridad](docs/SEGURIDAD.md) ·
@@ -100,6 +101,7 @@ Demostraciones más acotadas:
 ```bash
 python scripts/demo_completa.py            # solo el análisis, 9 pasos
 python scripts/demo_campo_multiusuario.py  # solo el despacho a 3 cuadrillas
+python scripts/demo_recursos.py            # cómo se ajusta al equipo disponible
 ```
 
 El paso a paso y la interpretación de cada salida están en
@@ -160,6 +162,7 @@ ptnt servir-visor       # visor de solo lectura  -> http://127.0.0.1:8080
 | `ptnt registrar-carga` | **Carga parcial**: declara qué insumo se cargó de qué alimentadores; reporta cobertura y pendientes |
 | `ptnt consolidar` | **Consolidado por unidad de negocio y subestación** + instantánea al histórico |
 | `ptnt crear-usuario` | Alta de usuario para las interfaces (solo hash) |
+| `ptnt recursos` | **Cuántas tareas caben en este equipo** y medición del coste por alimentador |
 | `ptnt campo-usuario` | **Crea un usuario de la aplicación móvil** |
 | `ptnt campo-definir` | **Define trabajo sin pasar por el ranking**: censo, actualización cartográfica, verificación de un listado, mantenimiento |
 | `ptnt campo-asignar` | **Asigna órdenes de levantamiento a un técnico** |
@@ -242,7 +245,7 @@ pytest -m security      # auth, secretos, visor
 pytest --cov=ptnt       # cobertura
 ```
 
-**380 pruebas** en verde (más las pruebas JVM de la app Android, en `mobile/`). Detalle de qué cubre cada archivo y los resultados de la
+**398 pruebas** en verde (más las pruebas JVM de la app Android, en `mobile/`). Detalle de qué cubre cada archivo y los resultados de la
 demostración extremo a extremo en [`docs/PRUEBAS.md`](docs/PRUEBAS.md).
 
 ## Alcance de esta entrega

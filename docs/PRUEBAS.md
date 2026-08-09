@@ -34,6 +34,7 @@ pytest --cov=ptnt --cov-report=term-missing   # con cobertura
 | `test_campo.py` | **GeoPackage OGC** (geometría ida y vuelta, envolvente, metadatos estándar, **no pierde columnas con filas heterogéneas**, índice espacial, manifiesto interno), **esquema** (Puesto→Unidad editable por separado, guid estable, dominios para el móvil, fotos con ubicación y fecha), **edición topológica** (**mover un cliente arrastra el extremo de su acometida**, mover un puesto arrastra sus unidades, **la relación eléctrica NO arrastra geometría**, tope de propagación, snap, no se elimina un puesto con dependientes, validación), **órdenes** (solo hash, vincular revoca el anterior, asignación masiva, no reasigna en silencio, máquina de estados), **paquete** (recorte al área, manifiesto, aviso por tamaño, huella), **sincronización** (lee el diario, rechaza paquete ajeno, hueco de secuencia bloquea, GPS impreciso advierte, **revisión parcial**, propagación incoherente advierte, **etapas a recalcular**), **histórico** (campo + archivo, historia de un elemento, más editados) |
 | `test_campo_multiusuario.py` | **Concurrencia** (tres cuadrillas sincronizando a la vez no pierden ninguna actualización, la segunda escritura sobre el estado ya consumido no surte efecto, una transición perdida se reporta como conflicto, la asignación en conflicto no deja nada escrito, cierre idempotente, el registro sobrevive al proceso, **migra un registro JSON anterior**), **reparto entre cuadrillas** (equilibra la carga, mantiene juntas las órdenes de cada una, el tope de jornada deja fuera lo de menor energía, sin coordenadas sigue siendo parejo, **es determinista**, aplicar el reparto deja a cada técnico con lo suyo, criterio desconocido falla claro), bitácora y carga por usuario |
 | `test_campo_reconexion.py` | **Reconexión de consumidor** (la conexión es editable en campo y llega así al móvil, reconectar es topológico y no un atributo, **obliga a recalcular las dos zonas** —origen y destino—, sin origen o destino bloquea el lote, reconectar al mismo transformador solo advierte, un cambio rechazado no arrastra recálculo), **definición del trabajo** (un censo no se evalúa por energía, bloques geográficamente compactos, las cuentas ausentes del padrón se reportan, selección por área dibujada, unir campañas sin códigos repetidos) |
+| `test_recursos.py` | **Presupuesto** (la memoria manda sobre los núcleos, con memoria de sobra manda la CPU, siempre cabe al menos una, la reserva del sistema no se toca, el tope de configuración gana, **la espera de red no se limita por núcleos**), **ejecutor** (procesa todo aunque haya más tareas que trabajadores, **un fallo no cancela el lote**, sin paralelismo no se arranca ningún proceso, la espera en cola queda medida, las tareas se consumen de forma perezosa), **control de admisión** (solo pasan los que caben y el resto espera, la cola llena responde «reintente», **el turno se libera aunque el bloque falle**, esperar demasiado también se rechaza, el reintento escala con la cola) |
 | `test_ciclo_campo_completo.py` *(integración)* | **Contrato móvil ↔ backend** verificado con el simulador: lo que la app escribe el backend lo lee y lo entiende (autor, precisión, secuencia sin huecos), **mover arrastra la acometida y llega marcado como propagado**, una reconexión recorre el ciclo hasta el recálculo de las dos zonas, **dos jornadas no duplican el histórico**, y eliminar un puesto con clientes se impide en el dispositivo |
 | `test_locations_versioning.py` | **Identidad geográfica estable** (código determinista, agrupa coordenadas cercanas, sectores conservan ubicación al cargar datos nuevos y ante reordenamiento), **registro persistente** (acumula priorizaciones sin inflar por re-ejecución, reincidencia, cierre por inspección, persistencia en disco), **versionado de topología** (alta, sin cambio, cada hash reacciona solo a su dominio, invalidación selectiva por tipo de cambio, historial, **las ubicaciones sobreviven al cambio de red**) |
 
@@ -122,6 +123,13 @@ y una jornada repartida, y verifica lo que el técnico ve y lo que nadie ve:
 - Sin token, o con uno inventado, no se ve nada (401).
 - Revocar el equipo de un técnico lo deja fuera **sin tocar** a los demás.
 
+También cubre los **límites de recursos**: la API acota las descargas
+simultáneas —seis técnicos a la vez, nunca más de dos en curso, ninguno
+rechazado— y, con la cola llena, **el trabajo del técnico no se pierde**: el
+paquete se guarda antes de pedir turno y se responde 503 con `Retry-After`.
+La invariante que se comprueba vale gane quien gane la carrera:
+`atendidas + rechazadas == intentos`, y los tres paquetes acaban en disco.
+
 También cubre el **trabajo de varios días**: sincronizar cierra solo lo que el
 técnico marcó completado, las órdenes empezadas suman jornada y siguen abiertas,
 las que nadie abrió no cuentan avance, y lo ya enviado no se reprocesa al día
@@ -199,7 +207,7 @@ tests los fijan como garantía de regresión.
 ## Estado actual
 
 ```
-380 passed
+398 passed
 ```
 
 Cobertura del núcleo de dominio (objetivo de la especificación ≥ 85 %):

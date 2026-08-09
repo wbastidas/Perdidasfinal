@@ -175,7 +175,29 @@ También implementados: **flujo trifásico desbalanceado con neutro explícito**
 validación analítica y contra **OpenDSS**, **Monte Carlo P10/P50/P90** de las
 pérdidas técnicas y exportador `.dss`.
 
-## 9. Ciclo de campo
+## 9. Ajuste a los recursos del equipo
+
+La plataforma **no** intenta hacer más de lo que el servidor aguanta. Procesa lo
+que cabe y **encola el resto** — en los tres frentes donde el trabajo llega de a
+muchos.
+
+| Frente | Paralelismo | Qué limita |
+|---|---|---|
+| Alimentadores | Procesos | `min(núcleos, memoria_utilizable / coste_por_tarea)`. La **memoria manda** en cuanto el alimentador es grande |
+| Bases de origen (11 UN) | Hilos | Concurrencia configurada y sesiones **por base**; no los núcleos, porque el tiempo se va esperando a la red |
+| Dispositivos móviles | Porteros | Descargas, subidas y consultas con límites **separados** y cola con tope |
+
+La regla de fondo: *dieciséis procesos en un equipo de 16 GB no dan dieciséis
+veces la velocidad, dan swap* — y con swap el lote tarda más que en secuencial,
+cuando no termina con procesos muertos y horas de cálculo perdidas.
+
+Se reserva memoria que la plataforma **nunca** toca (sistema operativo, base de
+datos y la API móvil): sin ella, un recálculo pesado deja a las cuadrillas sin
+poder descargar su trabajo.
+
+Detalle, mediciones y límites en [RECURSOS.md](RECURSOS.md).
+
+## 10. Ciclo de campo
 
 El análisis dice dónde ir; el campo dice qué hay. Sin la vuelta, el sistema
 produce informes que nadie verifica y el SIG envejece igual.

@@ -327,3 +327,168 @@ def test_tres_tecnicos_suben_su_jornada_a_la_vez(despacho, tmp_path):
     cerradas = [a for a in final.asignaciones.values()
                 if a.estado is EstadoOrden.COMPLETADA]
     assert len(cerradas) == len(tokens), "una por técnico, ni más ni menos"
+
+
+# --------------------------------------------------------------------------- #
+# Límites de recursos: la API no acepta más de lo que puede procesar
+# --------------------------------------------------------------------------- #
+@pytest.mark.integration
+def test_la_api_acota_las_descargas_simultaneas(tmp_path):
+    """Cuarenta cuadrillas a las siete de la mañana no pueden abrir cuarenta
+    descargas a la vez: se atienden N y el resto espera en cola."""
+
+    import threading
+
+    from fastapi.testclient import TestClient
+
+    from ptnt.config.models import RecursosConfig
+    from ptnt.field.api import crear_app
+
+    registro_ruta = tmp_path / "campo" / "registro.json"
+    reg = RegistroCampo(registro_ruta)
+    tecnicos = [f"t{i}" for i in range(6)]
+    for t in tecnicos:
+        reg.crear_usuario(t, t.upper(), CLAVE)
+
+    rep = repartir_ordenes(_ordenes(), tecnicos, criterio="kwh")
+    asignar_reparto(reg, rep, asignado_por="supervisor")
+    capas, conexiones = red_de_demostracion(list(reg.asignaciones.values()))
+    construir_paquetes(tmp_path / "campo" / "paquetes", registro=reg,
+                       red=capas, conexiones=conexiones, version_red="test")
+
+    app = crear_app(
+        registro_ruta=registro_ruta,
+        paquetes_dir=tmp_path / "campo" / "paquetes",
+        entrantes_dir=tmp_path / "campo" / "entrantes",
+        lotes_dir=tmp_path / "campo" / "lotes",
+        # Dos a la vez, cola amplia: todos deben ser atendidos, ninguno rechazado.
+        recursos=RecursosConfig(descargas_simultaneas=2, max_en_cola_api=32,
+                                espera_maxima_s=20.0),
+    )
+    cliente = TestClient(app)
+
+    tokens = {}
+    for t in tecnicos:
+        r = cliente.post("/movil/vincular", json={
+            "usuario": t, "password": CLAVE, "dispositivo_id": f"TEL-{t}"})
+        tokens[t] = r.json()["token"]
+
+    barrera = threading.Barrier(len(tokens))
+    codigos: dict[str, int] = {}
+
+    def baja(usuario: str, token: str) -> None:
+        barrera.wait()
+        codigos[usuario] = cliente.get(
+            "/movil/paquete",
+            headers={"Authorization": f"Bearer {token}"}).status_code
+
+    hilos = [threading.Thread(target=baja, args=(u, t)) for u, t in tokens.items()]
+    for h in hilos:
+        h.start()
+    for h in hilos:
+        h.join()
+
+    assert set(codigos.values()) == {200}, codigos
+
+    capacidad = cliente.get("/movil/estado").json()["capacidad"]
+    assert capacidad["descargas"]["limite"] == 2
+    assert capacidad["descargas"]["pico_en_curso"] <= 2, "nunca más de dos a la vez"
+    assert capacidad["descargas"]["atendidas"] == len(tecnicos)
+    assert capacidad["descargas"]["rechazadas"] == 0
+
+    # Y ninguna orden se perdió pese a la cola.
+    final = RegistroCampo(registro_ruta)
+    descargadas = [a for a in final.asignaciones.values()
+                   if a.estado is EstadoOrden.DESCARGADA]
+    assert len(descargadas) == N
+
+
+@pytest.mark.integration
+def test_con_la_cola_llena_el_trabajo_no_se_pierde(tmp_path):
+    """Un 503 al sincronizar no puede significar perder la jornada: el paquete se
+    guarda **antes** de pedir turno, y se le dice al técnico que reintente."""
+
+    import shutil
+    import threading
+
+    from fastapi.testclient import TestClient
+
+    from ptnt.config.models import RecursosConfig
+    from ptnt.field.api import crear_app
+
+    registro_ruta = tmp_path / "campo" / "registro.json"
+    reg = RegistroCampo(registro_ruta)
+    for t in ("ana", "beto", "carla"):
+        reg.crear_usuario(t, t.title(), CLAVE)
+    rep = repartir_ordenes(_ordenes(), ["ana", "beto", "carla"], criterio="kwh")
+    asignar_reparto(reg, rep, asignado_por="supervisor")
+    capas, conexiones = red_de_demostracion(list(reg.asignaciones.values()))
+    construir_paquetes(tmp_path / "campo" / "paquetes", registro=reg,
+                       red=capas, conexiones=conexiones, version_red="test")
+
+    app = crear_app(
+        registro_ruta=registro_ruta,
+        paquetes_dir=tmp_path / "campo" / "paquetes",
+        entrantes_dir=tmp_path / "campo" / "entrantes",
+        lotes_dir=tmp_path / "campo" / "lotes",
+        # Una subida a la vez y sin cola: fuerza el rechazo para comprobar que el
+        # trabajo del técnico sobrevive igual.
+        recursos=RecursosConfig(subidas_simultaneas=1, max_en_cola_api=0,
+                                espera_maxima_s=0.2),
+    )
+    cliente = TestClient(app)
+
+    tokens = {}
+    for t in ("ana", "beto", "carla"):
+        r = cliente.post("/movil/vincular", json={
+            "usuario": t, "password": CLAVE, "dispositivo_id": f"TEL-{t}"})
+        tokens[t] = r.json()["token"]
+        cliente.get("/movil/paquete",
+                    headers={"Authorization": f"Bearer {tokens[t]}"})
+
+    retornos = {}
+    for t in tokens:
+        c = tmp_path / f"retorno_{t}.gpkg"
+        shutil.copy(tmp_path / "campo" / "paquetes" / f"{t}.gpkg", c)
+        _paquete_editado(c, ordenes_completadas=[], n_cambios=2)
+        retornos[t] = c
+
+    barrera = threading.Barrier(len(tokens))
+    respuestas: dict[str, dict] = {}
+
+    def sube(usuario: str, token: str) -> None:
+        barrera.wait()
+        with retornos[usuario].open("rb") as f:
+            r = cliente.post(
+                "/movil/sincronizar",
+                headers={"Authorization": f"Bearer {token}"},
+                files={"archivo": ("r.gpkg", f, "application/octet-stream")})
+        respuestas[usuario] = {"codigo": r.status_code,
+                               "retry": r.headers.get("Retry-After"), **r.json()}
+
+    hilos = [threading.Thread(target=sube, args=(u, t)) for u, t in tokens.items()]
+    for h in hilos:
+        h.start()
+    for h in hilos:
+        h.join()
+
+    # Ninguno es un error real: o se procesó, o se pidió reintentar.
+    assert all(r["codigo"] in (200, 503) for r in respuestas.values()), respuestas
+
+    for r in (x for x in respuestas.values() if x["codigo"] == 503):
+        # Lo esencial: el trabajo se recibió aunque no se procesara.
+        assert r["recibido"] is True
+        assert r["procesado"] is False
+        assert r["retry"] and int(r["retry"]) > 0
+        assert "guardado" in r["mensaje"]
+
+    # Invariante que se cumple gane quien gane la carrera: cada intento acabó
+    # atendido o rechazado, ninguno se quedó en el limbo.
+    subidas = cliente.get("/movil/estado").json()["capacidad"]["subidas"]
+    assert subidas["atendidas"] + subidas["rechazadas"] == len(tokens)
+    assert subidas["pico_en_curso"] <= 1, "nunca más de una subida a la vez"
+
+    # Y **los tres** paquetes están en disco, incluidos los rechazados: se puede
+    # reintentar sin mandar a nadie de vuelta a la calle.
+    entrantes = list((tmp_path / "campo" / "entrantes").glob("*.gpkg"))
+    assert len(entrantes) == len(tokens)

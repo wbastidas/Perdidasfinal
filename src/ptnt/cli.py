@@ -1078,12 +1078,18 @@ def campo_servir(
     console.print(f"[green]API móvil[/] en http://{host}:{puerto}")
     console.print(f"  Registro:  {dir_campo / 'registro.json'}")
     console.print(f"  Paquetes:  {dir_campo / 'paquetes'}")
+    console.print(f"  Capacidad: {cfg.recursos.descargas_simultaneas} descarga(s) "
+                  f"y {cfg.recursos.subidas_simultaneas} subida(s) simultáneas · "
+                  f"cola de {cfg.recursos.max_en_cola_api}")
+    console.print("  Lo que no cabe espera; si la cola se llena se responde 503 "
+                  "con Retry-After y el paquete se guarda igual.")
     uvicorn.run(
         crear_app(
             registro_ruta=dir_campo / "registro.json",
             paquetes_dir=dir_campo / "paquetes",
             entrantes_dir=dir_campo / "entrantes",
             lotes_dir=dir_campo / "lotes",
+            recursos=cfg.recursos,
         ),
         host=host, port=puerto,
     )
@@ -1158,6 +1164,113 @@ def _red_de_campo(red: str | None, asigs: list):
     console.print("[yellow]Sin --red: se usa el escenario de demostración.[/]")
     from ptnt.field.demo_red import red_de_demostracion
     return red_de_demostracion(asigs)
+
+
+@app.command()
+def recursos(
+    coste_mb: int = typer.Option(0, "--coste-mb",
+                                 help="Memoria por tarea a simular; 0 usa la del YAML"),
+    medir: bool = typer.Option(False, "--medir",
+                               help="Mide el coste real de un alimentador sintético"),
+    config: str = _CONFIG_OPT,
+):
+    """Muestra cuántas tareas caben en este equipo, y por qué ese número.
+
+    Sirve para dos cosas: comprobar que el servidor está dimensionado antes de
+    lanzar un recálculo de once unidades de negocio, y **medir** cuánta memoria
+    consume de verdad un alimentador para ajustar `recursos.coste_mb_por_tarea`
+    en vez de adivinarlo.
+    """
+
+    from ptnt.runtime.resources import Recursos, calcular_presupuesto
+
+    cfg = _cargar(config)
+    r = Recursos.detectar()
+
+    tabla = Table(title="Recursos del equipo")
+    tabla.add_column("Concepto"); tabla.add_column("Valor", justify="right")
+    for k, v in r.resumen().items():
+        tabla.add_row(k.replace("_", " ").capitalize(),
+                      f"{v:,}" if isinstance(v, int) else str(v))
+    console.print(tabla)
+
+    if medir:
+        pico = _medir_coste_alimentador()
+        console.print(f"\n[bold]Medición sobre un alimentador sintético:[/] "
+                      f"{pico:,} MB de pico")
+        console.print("  Ajuste [cyan]recursos.coste_mb_por_tarea[/] a ese valor "
+                      "con margen. Un alimentador urbano real consume más que el "
+                      "sintético: mida con el suyo antes de producción.")
+        coste_mb = coste_mb or pico
+
+    rec = cfg.recursos
+    efectivo = coste_mb or rec.coste_mb_por_tarea
+
+    tabla2 = Table(title="Cuántas tareas caben")
+    for c in ("Tipo de trabajo", "Trabajadores", "Limita", "Coste/tarea"):
+        tabla2.add_column(c, justify="right" if c != "Tipo de trabajo" else "left")
+
+    calculo = calcular_presupuesto(
+        coste_mb_por_tarea=efectivo, cpus_maximos=rec.cpus,
+        ram_reservada_mb=rec.ram_reservada_mb,
+        fraccion_ram_utilizable=rec.fraccion_ram_utilizable,
+        tope=rec.max_trabajadores or None, recursos=r)
+    tabla2.add_row("Alimentadores (cálculo)", str(calculo.trabajadores),
+                   calculo.limitado_por, f"{efectivo:,} MB")
+
+    lectura = calcular_presupuesto(
+        coste_mb_por_tarea=max(1, efectivo // 8),
+        cpus_maximos=rec.lecturas_simultaneas,
+        ram_reservada_mb=rec.ram_reservada_mb,
+        fraccion_ram_utilizable=rec.fraccion_ram_utilizable,
+        tope=rec.lecturas_simultaneas, ligado_a_cpu=False, recursos=r)
+    tabla2.add_row("Lecturas de bases (E/S)", str(lectura.trabajadores),
+                   lectura.limitado_por, f"{max(1, efectivo // 8):,} MB")
+    console.print(tabla2)
+    console.print(f"  {calculo.explicacion()}")
+
+    tabla3 = Table(title="Concurrencia de la API móvil")
+    for c in ("Operación", "Simultáneas", "Cola"):
+        tabla3.add_column(c, justify="right" if c != "Operación" else "left")
+    tabla3.add_row("Descargas de paquete", str(rec.descargas_simultaneas),
+                   str(rec.max_en_cola_api))
+    tabla3.add_row("Subidas de trabajo", str(rec.subidas_simultaneas),
+                   str(rec.max_en_cola_api))
+    tabla3.add_row("Consultas de órdenes",
+                   str(max(8, rec.descargas_simultaneas * 4)),
+                   str(rec.max_en_cola_api * 2))
+    console.print(tabla3)
+    console.print("  Lo que no cabe **espera en cola**; si la cola se llena se "
+                  "responde 503 con [cyan]Retry-After[/], que la app reintenta "
+                  "sola. El paquete de retorno se guarda igual: el trabajo del "
+                  "día no se pierde por una cola llena.")
+
+
+def _medir_coste_alimentador() -> int:
+    """Pico de memoria al procesar un alimentador sintético, en MB.
+
+    Se mide con `tracemalloc` sobre el proceso actual: da el pico de asignación
+    de Python, que es lo que multiplica el paralelismo. No incluye la memoria del
+    intérprete ni de las librerías —esas se pagan una vez por proceso—, así que
+    conviene sumar un margen.
+    """
+
+    import tracemalloc
+
+    from ptnt.grid_pipeline import run_grid_analysis
+    from ptnt.synth.network import generate_radial_network
+
+    cfg = _cargar("config/base.yaml")
+    sint = generate_radial_network(n_transformers=20, customers_per_tx=50)
+    tracemalloc.start()
+    try:
+        run_grid_analysis(sint.model, cfg, trifasico=True)
+        _, pico = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    # Se suma margen: `tracemalloc` mide solo las asignaciones de Python, no los
+    # búferes de numpy ni el propio intérprete, que se pagan por proceso.
+    return max(64, int(pico / (1 << 20)) + 64)
 
 
 @app.command()
@@ -1354,7 +1467,8 @@ def campo_paquetes(
     ``.gpkg`` tienen que estar todos listos antes, no uno por comando.
     """
 
-    from ptnt.field import RegistroCampo, construir_paquetes, resumen_paquetes
+    from ptnt.field import RegistroCampo, resumen_paquetes
+    from ptnt.runtime.batch import construir_paquetes_en_paralelo
 
     cfg = _cargar(config)
     dir_campo = Path(cfg.rutas.salidas) / "campo"
@@ -1368,8 +1482,10 @@ def campo_paquetes(
         raise typer.Exit(code=2)
 
     capas, conexiones = _red_de_campo(red, todas)
-    resultados = construir_paquetes(
-        dir_campo / "paquetes", registro=reg, usuarios=lista, red=capas,
+    # En paralelo, hasta donde el equipo aguante: el despacho de la mañana son
+    # diez o quince paquetes y las cuadrillas están esperando para salir.
+    resultados = construir_paquetes_en_paralelo(
+        dir_campo / "paquetes", registro=reg, usuarios=lista, red=capas, cfg=cfg,
         conexiones=conexiones, teselas=teselas, margen_m=margen,
         version_red=cfg.proyecto.version_config)
 

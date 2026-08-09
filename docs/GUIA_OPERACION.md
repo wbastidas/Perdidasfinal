@@ -447,6 +447,41 @@ algo deja de encajar.
 
 ---
 
+## 10. Dimensionar el equipo
+
+La plataforma se ajusta sola a los núcleos y la memoria disponibles: procesa lo
+que cabe y **encola el resto**. Antes de un recálculo grande conviene mirar
+cuánto cabe:
+
+```bash
+ptnt recursos            # qué hay y cuántas tareas caben
+ptnt recursos --medir    # mide el coste real de un alimentador
+```
+
+```
+ Tipo de trabajo          Trabajadores        Limita   Coste/tarea
+ Alimentadores (cálculo)             4           cpu        512 MB
+ Lecturas de bases (E/S)             6  concurrencia         64 MB
+```
+
+Tres cosas que conviene entender de esa tabla:
+
+* **«Limita: memoria» es la señal de alarma.** Significa que los núcleos están
+  ociosos porque no hay RAM para alimentarlos. O se sube la memoria del servidor,
+  o se baja `coste_mb_por_tarea` si está sobreestimado.
+* **Las lecturas no se limitan por núcleos.** Once unidades de negocio se leen en
+  paralelo porque el tiempo se va esperando a la red, no calculando.
+* **La espera en cola se reporta.** Si la última tarea de un lote esperó veinte
+  minutos, ese número es el argumento para pedir más máquina.
+
+Durante la operación, `GET /movil/estado` muestra la carga de la API móvil. Si el
+pico de cola se acerca al tope todos los días a la misma hora, el equipo se quedó
+corto — y ahí está el dato.
+
+Detalle completo en [RECURSOS.md](RECURSOS.md).
+
+---
+
 ## Resumen del flujo
 
 ```

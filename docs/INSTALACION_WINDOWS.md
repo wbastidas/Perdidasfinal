@@ -147,6 +147,36 @@ La distribución interna se hace por MDM o por descarga directa desde la intrane
 Firme el APK con la clave de la distribuidora y **no la versione**: un APK firmado
 con esa clave se instala como si fuera oficial.
 
+## 5.ter Dimensionar el servidor
+
+Antes de poner en producción, compruebe cuánto cabe:
+
+```powershell
+ptnt recursos            # qué hay y cuántas tareas caben
+ptnt recursos --medir    # mide el coste real de un alimentador
+```
+
+La plataforma se ajusta sola a los núcleos y la memoria disponibles. La sección
+`recursos` del YAML solo hace falta si el servidor **comparte** con otro
+servicio; entonces se acota con `max_trabajadores` o subiendo
+`ram_reservada_mb`.
+
+**Lo único que conviene medir y fijar es `coste_mb_por_tarea`**: es la memoria
+pico de un alimentador. Ponerlo bajo hace que el sistema lance de más y acabe
+paginando —y con paginación el lote tarda más que en secuencial—; ponerlo alto
+desperdicia núcleos. Mídalo con un alimentador **suyo**, no con el sintético.
+
+Orientación por volumetría:
+
+| Escenario | Recomendación |
+|---|---|
+| 1 unidad de negocio, hasta 200 alimentadores | 8 núcleos, 32 GB |
+| 11 unidades de negocio, recálculo nocturno | 16 núcleos, 64 GB |
+| El mismo equipo sirve la API móvil | Subir `ram_reservada_mb` a 4096 y mantener `subidas_simultaneas` bajo |
+
+Si el pico de cola de `GET /movil/estado` se acerca al tope todos los días a la
+misma hora, el equipo se quedó corto — y ahí tiene el número para justificarlo.
+
 ## 6. Ejecución programada (Programador de tareas de Windows)
 
 Para recalcular cada noche:

@@ -262,7 +262,22 @@ dominio), el **módulo** que lo implementa y la **prueba** que lo verifica.
 | RF-106 | **Informes HTML + PDF por etapa**, autocontenidos | `report/` |
 | RF-107 | Pestaña de **trabajo de campo**: técnicos, reparto, paquetes y revisión | `dashboard/app.py` |
 
-## 2.12 Trabajo de campo y aplicación móvil
+## 2.12 Ajuste a los recursos del equipo
+
+| ID | Requerimiento | Módulo |
+|---|---|---|
+| RF-190 | **Detección automática** de núcleos y memoria disponibles, respetando contenedores | `runtime/resources.py` |
+| RF-191 | El paralelismo se acota por **memoria**, no solo por núcleos | `runtime/resources.py` |
+| RF-192 | Reserva de memoria que la plataforma **nunca** usa (SO, base, API móvil) | `runtime/resources.py` |
+| RF-193 | Procesamiento de **varios alimentadores en paralelo**, con cola de espera para el resto | `runtime/pool.py` |
+| RF-194 | Verificación de memoria **antes de admitir cada tarea**, no solo al empezar | `runtime/pool.py` |
+| RF-195 | **Aislamiento de fallos**: un alimentador corrupto no cancela el lote | `runtime/pool.py` |
+| RF-196 | **Lectura en paralelo de varias bases** (11 unidades de negocio), con tope por base | `runtime/batch.py` |
+| RF-197 | **Control de admisión** de la API móvil: descargas, subidas y consultas con límites separados | `runtime/gate.py` |
+| RF-198 | Saturación → **503 con `Retry-After`** escalado; el paquete de retorno se guarda igual | `field/api.py` |
+| RF-199 | **Métricas de carga** expuestas: en curso, en cola, picos, esperas y rechazos | `field/api.py` |
+
+## 2.12b Trabajo de campo y aplicación móvil
 
 | ID | Requerimiento | Módulo |
 |---|---|---|
@@ -309,7 +324,8 @@ dominio), el **módulo** que lo implementa y la **prueba** que lo verifica.
 | RNF-13 | Android **API 24+**: cubre el parque real de equipos entregados a cuadrillas | `mobile/app/build.gradle.kts` |
 | RNF-14 | Token del dispositivo cifrado en **Keystore** | `mobile/sync/AlmacenSesionCifrado.kt` |
 | RNF-15 | Escrituras concurrentes **transaccionales**: `BEGIN IMMEDIATE` + compare-and-set | `field/store.py` |
-| RNF-16 | Proyección UTM⇄WGS84 con error **< 1 mm**; códec de geometría **byte a byte** idéntico entre Python y Kotlin | `mobile/geo/Utm.kt`, `field/gpkg.py` |
+| RNF-16 | Ningún parámetro de paralelismo codificado en duro: todo se detecta o se configura | `test_recursos` |
+| RNF-17 | Proyección UTM⇄WGS84 con error **< 1 mm**; códec de geometría **byte a byte** idéntico entre Python y Kotlin | `mobile/geo/Utm.kt`, `field/gpkg.py` |
 
 ---
 
@@ -491,6 +507,7 @@ src/ptnt/
 ├── report/       Informes HTML autocontenidos + gráficos SVG + PDF
 ├── store/        DuckDB + histórico de balance
 ├── security/     Auth (hash), secretos por entorno
+├── runtime/      Recursos, ejecutor con cola y control de admisión
 ├── field/        Trabajo de campo (ver abajo)
 ├── synth/        Generadores de escenario con verdad conocida
 ├── dashboard/    Tablero Streamlit (8 pestañas)
@@ -583,6 +600,7 @@ mobile/app/src/main/java/ec/cnel/ptnt/field/
 | `ptnt dashboard` | Tablero de escritorio |
 | `ptnt servir-visor` | Visor de solo lectura |
 | `ptnt crear-usuario` | Alta de usuario (solo hash) |
+| `ptnt recursos` | **Cuántas tareas caben en este equipo**, y medición del coste real |
 | `ptnt campo-usuario` | Alta de **usuario móvil** |
 | `ptnt campo-definir` | **Define trabajo** sin pasar por el ranking (censo, cartografía, listado) |
 | `ptnt campo-asignar` | Asigna órdenes a **un** técnico |
@@ -652,6 +670,7 @@ Secciones del YAML (`config/base.yaml`):
 | `balance` | Umbrales de los controles C01–C06 |
 | `cargabilidad` | Umbrales de sobrecarga y subutilización |
 | `flujo` | Tolerancia, iteraciones, impedancia de neutro |
+| `recursos` | Núcleos, reserva de memoria, coste por tarea, concurrencia de la API y de las lecturas |
 | `seguridad` | JWT, ruta de usuarios, redes permitidas, intentos de login |
 | `dashboard` / `visor` | Puertos y hosts |
 
@@ -760,6 +779,10 @@ termina con código de salida distinto de cero si alguna comprobación falla.
 | **Carga parcial** de información | RF-08, RF-105 | ✅ |
 | **Dashboard histórico** | RF-90…RF-94, RF-104 | ✅ |
 | Ver por **unidad de negocio y subestación** | RF-80…RF-84, RF-103 | ✅ |
+| **Ajuste a núcleos y RAM disponibles** | RF-190…RF-192 | ✅ |
+| Varios alimentadores en paralelo, resto **en cola** | RF-193…RF-195 | ✅ |
+| Varios equipos pidiendo y trayendo trabajo a la vez | RF-197…RF-199 | ✅ |
+| Leer de **varias bases** (11 unidades de negocio) | RF-196 | ✅ |
 | **Aplicación móvil** para llevar el trabajo al campo | RF-200…RF-222 | ✅ |
 | Órdenes con **múltiples trabajos asignables** | RF-202, RF-206 | ✅ |
 | Interfaz web para **asignar a varios usuarios** | RF-107, RF-202 | ✅ |

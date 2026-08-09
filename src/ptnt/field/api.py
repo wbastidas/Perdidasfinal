@@ -29,6 +29,7 @@ SIG en vez de mejorarlo.
 
 import shutil
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 from ptnt.field.schema import VERSION_ESQUEMA
@@ -40,14 +41,29 @@ def crear_app(
     paquetes_dir: str | Path = "outputs/campo/paquetes",
     entrantes_dir: str | Path = "outputs/campo/entrantes",
     lotes_dir: str | Path = "outputs/campo/lotes",
+    recursos=None,
 ):
-    """Construye la aplicación FastAPI de sincronización móvil."""
+    """Construye la aplicación FastAPI de sincronización móvil.
+
+    ``recursos`` es la sección homónima del YAML. Fija cuántas descargas y
+    subidas se atienden a la vez; el resto **espera en cola**. Sin ese límite,
+    cuarenta cuadrillas volviendo a las cinco de la tarde abren cuarenta
+    GeoPackages a la vez y el servidor se queda sin memoria justo cuando el
+    trabajo del día todavía no está a salvo en ningún otro sitio.
+    """
 
     from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
     from fastapi.responses import FileResponse, JSONResponse
 
     from ptnt.field.sync import recibir_paquete
     from ptnt.field.workorders import EstadoOrden, RegistroCampo
+    from ptnt.runtime.gate import PorterosServicio, ServicioSaturado
+
+    if recursos is None:
+        from ptnt.config.models import RecursosConfig
+
+        recursos = RecursosConfig()
+    porteros = PorterosServicio.desde_config(recursos)
 
     registro_ruta = Path(registro_ruta)
     paquetes_dir = Path(paquetes_dir)
@@ -64,6 +80,18 @@ def crear_app(
 
     def _registro() -> RegistroCampo:
         return RegistroCampo(registro_ruta)
+
+    @contextmanager
+    def _turno(portero, etiqueta: str):
+        """Toma turno y traduce la saturación a un 503 que la app entiende."""
+
+        try:
+            with portero.turno(etiqueta) as espera:
+                yield espera
+        except ServicioSaturado as exc:
+            raise HTTPException(
+                status_code=503, detail=str(exc),
+                headers={"Retry-After": str(exc.reintentar_en_s)}) from exc
 
     def usuario_actual(authorization: str = Header(default="")):
         """Resuelve el usuario desde el token del dispositivo."""
@@ -109,15 +137,20 @@ def crear_app(
     def ordenes(u=Depends(usuario_actual)):
         """Órdenes asignadas al usuario que aún no se sincronizaron."""
 
-        reg = _registro()
-        pendientes = reg.de_usuario(u.usuario, estados={
-            EstadoOrden.ASIGNADA, EstadoOrden.DESCARGADA, EstadoOrden.EN_PROCESO,
-        })
-        return {
-            "usuario": u.usuario,
-            "ordenes": [a.to_dict() for a in pendientes],
-            "total": len(pendientes),
-        }
+        # Las consultas van por su propio portero, con un límite alto: son
+        # baratas y son lo primero que hace el técnico. Si estas se saturan, la
+        # app parece caída aunque las descargas funcionen.
+        with _turno(porteros.consultas, u.usuario):
+            reg = _registro()
+            pendientes = reg.de_usuario(u.usuario, estados={
+                EstadoOrden.ASIGNADA, EstadoOrden.DESCARGADA,
+                EstadoOrden.EN_PROCESO,
+            })
+            return {
+                "usuario": u.usuario,
+                "ordenes": [a.to_dict() for a in pendientes],
+                "total": len(pendientes),
+            }
 
     # -- descarga del paquete ---------------------------------------------
     @app.get("/movil/paquete")
@@ -137,13 +170,15 @@ def crear_app(
                         "El supervisor debe asignarle órdenes y generar el "
                         "paquete."))
 
-        # Transición en lote y en una sola transacción: si dos técnicos bajan su
-        # paquete a la vez, cada uno mueve solo sus órdenes y ninguno pisa al otro.
-        _registro().marcar_descargadas(u.usuario, actor=u.usuario)
+        with _turno(porteros.descargas, u.usuario):
+            # Transición en lote y en una sola transacción: si dos técnicos bajan
+            # su paquete a la vez, cada uno mueve solo sus órdenes y ninguno pisa
+            # al otro.
+            _registro().marcar_descargadas(u.usuario, actor=u.usuario)
 
-        return FileResponse(
-            ruta, media_type="application/geopackage+sqlite3",
-            filename=f"trabajo_{u.usuario}.gpkg")
+            return FileResponse(
+                ruta, media_type="application/geopackage+sqlite3",
+                filename=f"trabajo_{u.usuario}.gpkg")
 
     # -- sincronización ----------------------------------------------------
     @app.post("/movil/sincronizar")
@@ -151,13 +186,37 @@ def crear_app(
                           u=Depends(usuario_actual)):
         """Recibe el paquete de retorno, lo valida y lo deja **en revisión**."""
 
+        # El archivo se recibe SIEMPRE, aunque no haya turno para procesarlo: es
+        # el trabajo del día del técnico y perderlo por una cola llena sería
+        # inaceptable. Lo que se limita es el **procesamiento**, que es lo caro —
+        # abrir el GeoPackage, recorrer el diario y validarlo.
         destino = entrantes_dir / f"{u.usuario}_{uuid.uuid4().hex[:8]}.gpkg"
         with destino.open("wb") as f:
             shutil.copyfileobj(archivo.file, f)
 
-        lote = recibir_paquete(destino, usuario_esperado=u.usuario)
+        try:
+            with porteros.subidas.turno(u.usuario):
+                return _procesar_retorno(destino, u)
+        except ServicioSaturado as exc:
+            # El paquete ya está a salvo en disco: el técnico no perdió nada y
+            # puede reintentar. Decírselo importa —si cree que se perdió, lo
+            # vuelve a capturar todo a mano.
+            return JSONResponse(
+                {"recibido": True, "procesado": False,
+                 "mensaje": ("Su trabajo quedó guardado en el servidor, pero hay "
+                             "demasiadas sincronizaciones en curso. Reintente en "
+                             f"{exc.reintentar_en_s} segundos."),
+                 "reintentar_en_s": exc.reintentar_en_s},
+                status_code=503,
+                headers={"Retry-After": str(exc.reintentar_en_s)})
+
+    def _procesar_retorno(destino: Path, u) -> "JSONResponse":
+        """Abre el paquete, lo valida y actualiza las órdenes. Es la parte cara."""
 
         import json
+
+        lote = recibir_paquete(destino, usuario_esperado=u.usuario)
+
         (lotes_dir / f"{lote.lote_id}.json").write_text(
             json.dumps({
                 "lote_id": lote.lote_id, "usuario": lote.usuario,
@@ -235,10 +294,18 @@ def crear_app(
     # -- estado ------------------------------------------------------------
     @app.get("/movil/estado")
     def estado():
+        """Salud del servicio y **carga actual**.
+
+        Las métricas no son adorno: si el pico de cola se acerca al tope todos
+        los días a las cinco de la tarde, el equipo se quedó corto y hay número
+        para justificarlo.
+        """
+
         return {
             "servicio": "PTNT-BAL sincronización móvil",
             "version_esquema": VERSION_ESQUEMA,
             "ok": True,
+            "capacidad": porteros.resumen(),
         }
 
     return app
