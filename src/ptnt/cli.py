@@ -1112,26 +1112,7 @@ def campo_paquete(
                       f"Use [cyan]ptnt campo-asignar --usuario {usuario}[/].")
         raise typer.Exit(code=2)
 
-    if red and Path(red).exists():
-        import duckdb
-        con = duckdb.connect(red, read_only=True)
-        capas = {}
-        for t in ("ptnt_puesto_transformacion", "ptnt_cliente", "ptnt_tramo",
-                  "ptnt_poste", "ptnt_luminaria", "ptnt_seccionador",
-                  "ptnt_capacitor", "ptnt_unidad_transformacion"):
-            try:
-                capas[t] = con.execute(f"SELECT * FROM {t}").df()
-            except Exception:
-                capas[t] = pd.DataFrame()
-        try:
-            conexiones = con.execute("SELECT * FROM ptnt_conexion").df()
-        except Exception:
-            conexiones = pd.DataFrame()
-        con.close()
-    else:
-        console.print("[yellow]Sin --red: se usa el escenario de demostración.[/]")
-        from ptnt.field.demo_red import red_de_demostracion
-        capas, conexiones = red_de_demostracion(asigs)
+    capas, conexiones = _red_de_campo(red, asigs)
 
     destino = dir_campo / "paquetes" / f"{usuario}.gpkg"
     res = construir_paquete(
@@ -1151,6 +1132,171 @@ def campo_paquete(
     console.print(f"[green]✓[/] {destino}")
     console.print("  El técnico lo descarga desde la app "
                   "([cyan]ptnt campo-servir[/] debe estar corriendo).")
+
+
+def _red_de_campo(red: str | None, asigs: list):
+    """Carga la red para armar paquetes: desde DuckDB, o el escenario de demo."""
+
+    if red and Path(red).exists():
+        import duckdb
+        con = duckdb.connect(red, read_only=True)
+        capas = {}
+        for t in ("ptnt_puesto_transformacion", "ptnt_cliente", "ptnt_tramo",
+                  "ptnt_poste", "ptnt_luminaria", "ptnt_seccionador",
+                  "ptnt_capacitor", "ptnt_unidad_transformacion"):
+            try:
+                capas[t] = con.execute(f"SELECT * FROM {t}").df()
+            except Exception:
+                capas[t] = pd.DataFrame()
+        try:
+            conexiones = con.execute("SELECT * FROM ptnt_conexion").df()
+        except Exception:
+            conexiones = pd.DataFrame()
+        con.close()
+        return capas, conexiones
+
+    console.print("[yellow]Sin --red: se usa el escenario de demostración.[/]")
+    from ptnt.field.demo_red import red_de_demostracion
+    return red_de_demostracion(asigs)
+
+
+@app.command()
+def campo_repartir(
+    usuarios: str = typer.Option(..., "--usuarios",
+                                 help="Técnicos separados por coma: ana,beto,carla"),
+    ordenes: str = typer.Option("outputs/ordenes_levantamiento.csv", "--ordenes"),
+    top: int = typer.Option(0, "--top",
+                            help="Cuántas órdenes tomar del ranking (0 = todas)"),
+    criterio: str = typer.Option("kwh", "--criterio",
+                                 help="Qué equilibrar: kwh | clientes | visitas"),
+    max_por_usuario: int = typer.Option(0, "--max-por-usuario",
+                                        help="Tope de órdenes por jornada (0 = sin tope)"),
+    beta: float = typer.Option(1.0, "--balance",
+                               help="0 = agrupar por cercanía; alto = igualar carga"),
+    radio: float = typer.Option(150.0, "--radio", help="Radio del área (m)"),
+    aplicar_: bool = typer.Option(False, "--aplicar",
+                                  help="Escribe el reparto; sin esto solo lo simula"),
+    config: str = _CONFIG_OPT,
+):
+    """Reparte las órdenes entre varias cuadrillas, parejo y por zonas.
+
+    Sin ``--aplicar`` solo muestra el reparto propuesto: repartir una jornada es
+    reversible en pantalla y caro en la calle.
+    """
+
+    from ptnt.field import RegistroCampo, asignar_reparto, repartir_ordenes
+
+    cfg = _cargar(config)
+    if not Path(ordenes).exists():
+        console.print(f"[red]No existe {ordenes}[/]. Ejecute [cyan]ptnt focalizar[/].")
+        raise typer.Exit(code=2)
+
+    lista = [u.strip() for u in usuarios.split(",") if u.strip()]
+    reg = RegistroCampo(Path(cfg.rutas.salidas) / "campo" / "registro.json")
+    faltan = [u for u in lista if u not in reg.usuarios]
+    if faltan:
+        console.print(f"[red]No existen estos técnicos: {', '.join(faltan)}[/] "
+                      "Créelos con [cyan]ptnt campo-usuario[/].")
+        raise typer.Exit(code=2)
+
+    df = pd.read_csv(ordenes)
+    if top > 0:
+        df = df.head(top)
+    try:
+        rep = repartir_ordenes(
+            df, lista, criterio=criterio,
+            max_por_usuario=max_por_usuario or None, peso_balance=beta)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=2)
+
+    res = rep.resumen()
+    tabla = Table(title=f"Reparto propuesto ({len(lista)} cuadrillas, "
+                        f"criterio {criterio})")
+    for c in res.columns:
+        tabla.add_column(c.replace("_", " ").capitalize(),
+                         justify="left" if c == "usuario" else "right")
+    for _, r in res.iterrows():
+        tabla.add_row(*[f"{v:,.1f}" if isinstance(v, float) else f"{v:,}"
+                        if isinstance(v, int) else str(v) for v in r])
+    console.print(tabla)
+    console.print(f"  Desbalance entre la más y la menos cargada: "
+                  f"[bold]{rep.desbalance_pct:.1f} %[/]")
+    for a in rep.advertencias():
+        console.print(f"[yellow]⚠ {a}[/]")
+
+    if not aplicar_:
+        console.print("\n[dim]Simulación. Añada [cyan]--aplicar[/] para "
+                      "escribir la asignación.[/]")
+        return
+
+    try:
+        hecho = asignar_reparto(reg, rep, asignado_por="cli", radio_m=radio)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=2)
+    console.print(f"\n[green]✓[/] {sum(len(v) for v in hecho.values())} "
+                  f"orden(es) asignadas a {len(lista)} técnico(s).")
+    console.print("  Genere los paquetes con: [cyan]ptnt campo-paquetes[/]")
+
+
+@app.command()
+def campo_paquetes(
+    usuarios: str = typer.Option("", "--usuarios",
+                                 help="Técnicos separados por coma; vacío = todos "
+                                      "los que tengan órdenes pendientes"),
+    red: str = typer.Option(None, "--red",
+                            help="DuckDB con la red migrada; omitir usa el escenario de demo"),
+    teselas: str = typer.Option(None, "--teselas",
+                                help="MBTiles de cartografía base"),
+    margen: float = typer.Option(250.0, "--margen", help="Margen alrededor del área (m)"),
+    config: str = _CONFIG_OPT,
+):
+    """Genera de una vez el paquete de cada técnico con trabajo pendiente.
+
+    Es el despacho de la mañana: las cuadrillas salen juntas, así que los
+    ``.gpkg`` tienen que estar todos listos antes, no uno por comando.
+    """
+
+    from ptnt.field import RegistroCampo, construir_paquetes, resumen_paquetes
+
+    cfg = _cargar(config)
+    dir_campo = Path(cfg.rutas.salidas) / "campo"
+    reg = RegistroCampo(dir_campo / "registro.json")
+    lista = [u.strip() for u in usuarios.split(",") if u.strip()] or None
+
+    todas = [a for a in reg.asignaciones.values()]
+    if not todas:
+        console.print("[red]No hay órdenes asignadas.[/] Use "
+                      "[cyan]ptnt campo-repartir[/] o [cyan]ptnt campo-asignar[/].")
+        raise typer.Exit(code=2)
+
+    capas, conexiones = _red_de_campo(red, todas)
+    resultados = construir_paquetes(
+        dir_campo / "paquetes", registro=reg, usuarios=lista, red=capas,
+        conexiones=conexiones, teselas=teselas, margen_m=margen,
+        version_red=cfg.proyecto.version_config)
+
+    res = resumen_paquetes(resultados)
+    tabla = Table(title="Paquetes generados")
+    for c in ("usuario", "estado", "ordenes", "elementos", "area_km2",
+              "tamano_mb"):
+        if c in res.columns:
+            tabla.add_column(c.replace("_", " ").capitalize(),
+                             justify="left" if c in ("usuario", "estado") else "right")
+    for _, r in res.iterrows():
+        tabla.add_row(str(r["usuario"]), str(r["estado"]),
+                      f"{int(r.get('ordenes', 0)):,}",
+                      f"{int(r.get('elementos', 0)):,}",
+                      f"{float(r.get('area_km2', 0)):,.2f}",
+                      f"{float(r.get('tamano_mb', 0)):,.2f}")
+    console.print(tabla)
+    for u, r in resultados.items():
+        if isinstance(r, str):
+            console.print(f"[yellow]⚠ {u}: {r}[/]")
+    ok = sum(1 for r in resultados.values() if not isinstance(r, str))
+    console.print(f"[green]✓[/] {ok} paquete(s) en {dir_campo / 'paquetes'}")
+
 
 if __name__ == "__main__":  # pragma: no cover
     app()

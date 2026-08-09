@@ -132,10 +132,9 @@ def crear_app(
                         "El supervisor debe asignarle órdenes y generar el "
                         "paquete."))
 
-        reg = _registro()
-        for a in reg.de_usuario(u.usuario, estados={EstadoOrden.ASIGNADA}):
-            a.transicionar(EstadoOrden.DESCARGADA)
-        reg.save()
+        # Transición en lote y en una sola transacción: si dos técnicos bajan su
+        # paquete a la vez, cada uno mueve solo sus órdenes y ninguno pisa al otro.
+        _registro().marcar_descargadas(u.usuario, actor=u.usuario)
 
         return FileResponse(
             ruta, media_type="application/geopackage+sqlite3",
@@ -172,14 +171,10 @@ def crear_app(
             reg = _registro()
             for o in lote.ordenes:
                 ot = str(o.get("orden_trabajo", ""))
-                a = reg.asignaciones.get(ot)
-                if a and a.estado in (EstadoOrden.DESCARGADA,
-                                      EstadoOrden.EN_PROCESO):
-                    if a.estado is EstadoOrden.DESCARGADA:
-                        a.transicionar(EstadoOrden.EN_PROCESO)
-                    a.transicionar(EstadoOrden.COMPLETADA)
-                    a.resultado = str(o.get("resultado", ""))
-            reg.save()
+                # `cerrar_orden` devuelve None si la orden ya se cerró: un reenvío
+                # del mismo paquete no debe fallar ni contar dos veces.
+                reg.cerrar_orden(ot, resultado=str(o.get("resultado", "")),
+                                 actor=u.usuario)
 
         return JSONResponse({
             "recibido": True,

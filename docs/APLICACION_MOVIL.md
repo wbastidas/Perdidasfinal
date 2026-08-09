@@ -41,6 +41,81 @@ Maps, **sin licencias de ArcGIS**: GeoPackage OGC y MapLibre GL.
 
 ---
 
+## 1.bis Despacho a varias cuadrillas
+
+El equipo de campo es un equipo, no una persona. El backend resuelve tres cosas
+que solo aparecen cuando hay más de un técnico:
+
+### Reparto de la jornada
+
+`repartir_ordenes()` atiende dos objetivos que compiten:
+
+* **Carga pareja.** Un técnico con 18 000 kWh en juego y otro con 3 000 significa
+  que el primero no termina y el segundo vuelve a media tarde. La carga se mide
+  por energía recuperable, por clientes a inspeccionar o por número de visitas
+  (`--criterio kwh | clientes | visitas`); el número de órdenes no sirve, porque
+  una ruta comercial con 100 clientes no cuesta lo mismo que un sector con 14.
+* **Coherencia geográfica.** Repartir por sorteo manda a la misma cuadrilla a dos
+  extremos de la ciudad; el traslado se come las visitas, y las visitas son lo
+  único que recupera energía.
+
+Cada orden va a la cuadrilla que minimiza `distancia_normalizada + β · carga_relativa`,
+con las asignaciones grandes colocadas primero (cuando aún hay holgura para
+equilibrar). El resultado se reporta con **ambas** métricas —desbalance % y
+dispersión km— para que la decisión sea visible:
+
+```
+usuario  ordenes  clientes  recuperable_kwh_mes  dispersion_km
+    ana        9       256              69449.0           0.90
+   beto        8       201              69471.0           0.34
+  carla        7       219              72828.0           0.30
+   → desbalance 4.8 %
+```
+
+El reparto es **determinista**: las semillas se eligen por punto más lejano, no al
+azar. Un supervisor que reparte dos veces la misma lista obtiene el mismo
+resultado, y puede explicarlo.
+
+Sin coordenadas utilizables el problema se reduce a repartir pesos y se resuelve
+con LPT (*longest processing time first*), cuyo error está acotado por
+4/3 − 1/(3m) respecto del óptimo.
+
+`--max-por-usuario` limita la jornada: lo que no cabe se devuelve aparte, no se
+reparte igual. Una cuadrilla con más órdenes de las que puede hacer no las hace,
+las arrastra.
+
+### Sincronización simultánea
+
+Cuando las cuadrillas vuelven a la base, sincronizan a la vez. La persistencia
+original en JSON perdía trabajo en silencio: cada proceso cargaba el archivo
+entero, lo modificaba y lo reescribía completo, así que **el último en guardar
+pisaba a los demás**. Medido: de 9 actualizaciones concurrentes sobrevivían 3.
+
+`ptnt.field.store.AlmacenCampo` lo resuelve con SQLite transaccional:
+
+| Decisión | Por qué |
+|---|---|
+| `BEGIN IMMEDIATE` en toda escritura | Toma el bloqueo al empezar la transacción, no al primer `INSERT`. Sin eso, dos transacciones que leen y luego escriben se entrelazan y una recibe `SQLITE_BUSY` a medio camino. |
+| `UPDATE … WHERE estado = <el leído>` | *Compare-and-set*: si otro proceso ya movió la orden, el `UPDATE` afecta cero filas y la operación falla explícitamente en vez de sobrescribir una transición ajena. |
+| `busy_timeout` + WAL | Esperar 200 ms es invisible; fallar obliga al técnico a reintentar y a veces a rehacer el trabajo. Con WAL, un técnico consultando sus órdenes no frena la sincronización de otro. |
+| Bitácora de operaciones | Una orden que cambió de manos es imposible de explicar tres semanas después sin registro de quién la movió y cuándo. |
+
+La asignación de un lote es **todo o nada**: media jornada asignada es peor que
+ninguna, porque nadie sabe qué falta.
+
+### Paquetes en lote
+
+`construir_paquetes()` genera el `.gpkg` de cada técnico con trabajo pendiente,
+leyendo la red **una sola vez**. Es el despacho de la mañana: las cuadrillas salen
+juntas. Un fallo con un técnico no cancela a los demás — que una cuadrilla se
+quede sin paquete es un problema; que se queden las cinco, un día perdido.
+
+Verificado de extremo a extremo en `scripts/demo_campo_multiusuario.py`: tres
+técnicos, 24 órdenes, vinculación real por HTTP, descarga simultánea →
+**24/24 órdenes** en estado correcto y cada técnico viendo exactamente su parte.
+
+---
+
 ## 2. Por qué GeoPackage y no otra cosa
 
 | | |
@@ -330,16 +405,32 @@ Consultas incluidas:
 ## 13. Comandos
 
 ```bash
+# --- alta de cuadrillas -------------------------------------------------
 ptnt campo-usuario jperez --nombre "Juan Pérez"    # crea el usuario móvil
+
+# --- despacho a UNA cuadrilla -------------------------------------------
 ptnt campo-asignar --usuario jperez --top 10       # asigna la jornada
 ptnt campo-paquete --usuario jperez \
     --teselas cartografia/gye.mbtiles              # arma el .gpkg
+
+# --- despacho a VARIAS cuadrillas ---------------------------------------
+ptnt campo-repartir --usuarios ana,beto,carla \
+    --top 30 --criterio kwh                        # simula el reparto
+ptnt campo-repartir --usuarios ana,beto,carla \
+    --top 30 --max-por-usuario 10 --aplicar        # lo escribe
+ptnt campo-paquetes --teselas cartografia/gye.mbtiles   # todos los .gpkg
+
+# --- servicio y revisión -------------------------------------------------
 ptnt campo-servir --puerto 8090                    # API de sincronización
 ptnt campo-revisar <lote> --rechazar 4             # revisa y decide
 ```
 
-La asignación y la revisión también están en el tablero (pestaña **📱 Trabajo de
-campo**).
+`campo-repartir` sin `--aplicar` solo muestra el reparto propuesto: repartir una
+jornada es reversible en pantalla y caro en la calle.
+
+El reparto, la asignación y la revisión también están en el tablero (pestaña
+**📱 Trabajo de campo**), con un control deslizante para graduar el compromiso
+entre agrupar por cercanía e igualar cargas.
 
 ### API móvil
 
@@ -387,17 +478,20 @@ Leyendo el esquema del propio archivo, la app se adapta sola.
 
 | Componente | Estado |
 |---|---|
-| Escritor/lector GeoPackage OGC | **Completo y probado** (47 pruebas) |
+| Escritor/lector GeoPackage OGC | **Completo y probado** |
 | Esquema del paquete (13 capas) | **Completo** |
 | Motor topológico backend | **Completo y probado** |
 | Órdenes, asignación, máquina de estados | **Completo y probado** |
+| Almacén transaccional y concurrencia | **Completo y probado** (68 pruebas de campo) |
+| Reparto entre varias cuadrillas | **Completo y probado** |
+| Paquetes en lote | **Completo y probado** |
 | Armado del paquete con recorte | **Completo y probado** |
 | Sincronización, validación, revisión | **Completo y probado** |
 | Recálculo selectivo | **Completo y probado** |
 | Histórico de modificaciones | **Completo y probado** |
-| API móvil (FastAPI) | **Completa** |
+| API móvil (FastAPI) | **Completa y probada con varios usuarios a la vez** |
 | Interfaz web de asignación y revisión | **Completa** |
-| CLI de campo (5 comandos) | **Completa** |
+| CLI de campo (7 comandos) | **Completa** |
 | Kotlin: DAO, editor, fotos, sync, UI adaptativa | **Núcleo implementado** |
 | Kotlin: integración MapLibre, cámara, pantallas completas | **Pendiente** |
 

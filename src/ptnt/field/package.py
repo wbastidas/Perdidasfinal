@@ -263,6 +263,77 @@ def construir_paquete(
     return res
 
 
+def construir_paquetes(
+    directorio: str | Path,
+    *,
+    registro: RegistroCampo,
+    usuarios: list[str] | None = None,
+    red: dict[str, pd.DataFrame],
+    conexiones: pd.DataFrame | None = None,
+    sectores: pd.DataFrame | None = None,
+    teselas: str | Path | None = None,
+    version_red: str = "",
+    margen_m: float = 250.0,
+    max_elementos: int = 60_000,
+) -> dict[str, ResultadoPaquete | str]:
+    """Genera de una vez el paquete de **cada** técnico con órdenes pendientes.
+
+    Es la operación real del despacho de la mañana: el supervisor reparte la
+    jornada entre las cuadrillas y necesita todos los ``.gpkg`` listos antes de
+    que salgan, no uno por comando.
+
+    La red se lee **una sola vez** y se reutiliza para todos: recortar el área es
+    barato, volver a cargar la red no.
+
+    Un fallo con un técnico no cancela a los demás — que una cuadrilla se quede
+    sin paquete es un problema; que se queden las cinco, un día perdido. Los
+    errores vuelven en el mismo diccionario, como texto, para que se vean.
+    """
+
+    directorio = Path(directorio)
+    directorio.mkdir(parents=True, exist_ok=True)
+
+    if usuarios is None:
+        usuarios = sorted({
+            a.asignado_a for a in registro.asignaciones.values()
+            if a.estado in (EstadoOrden.ASIGNADA, EstadoOrden.DESCARGADA,
+                            EstadoOrden.EN_PROCESO)
+        })
+
+    resultados: dict[str, ResultadoPaquete | str] = {}
+    for usuario in usuarios:
+        asigs = registro.de_usuario(usuario, estados={
+            EstadoOrden.ASIGNADA, EstadoOrden.DESCARGADA, EstadoOrden.EN_PROCESO})
+        if not asigs:
+            resultados[usuario] = "Sin órdenes pendientes: no se generó paquete."
+            continue
+        try:
+            resultados[usuario] = construir_paquete(
+                directorio / f"{usuario}.gpkg", usuario=usuario,
+                asignaciones=asigs, red=red, conexiones=conexiones,
+                sectores=sectores, teselas=teselas, version_red=version_red,
+                margen_m=margen_m, max_elementos=max_elementos)
+        except Exception as exc:                       # noqa: BLE001
+            resultados[usuario] = f"Error al generar el paquete: {exc}"
+    return resultados
+
+
+def resumen_paquetes(resultados: dict[str, ResultadoPaquete | str]) -> pd.DataFrame:
+    """Tabla del lote de paquetes, con los fallos visibles en la misma columna."""
+
+    filas = []
+    for usuario, r in resultados.items():
+        if isinstance(r, ResultadoPaquete):
+            filas.append({"usuario": usuario, "estado": "OK", **{
+                k: v for k, v in r.resumen().items() if k != "usuario"}})
+        else:
+            filas.append({"usuario": usuario, "estado": "SIN PAQUETE",
+                          "archivo": "", "ordenes": 0, "elementos": 0,
+                          "conexiones": 0, "area_km2": 0.0, "tamano_mb": 0.0,
+                          "teselas": 0, "detalle": r})
+    return pd.DataFrame(filas)
+
+
 def _filas_capa(df: pd.DataFrame, capa, area: AreaTrabajo, *, con_area: bool
                 ) -> tuple[list[dict], set[str]]:
     """Convierte un DataFrame a filas del GeoPackage, recortando al área."""

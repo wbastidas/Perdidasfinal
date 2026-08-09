@@ -147,7 +147,9 @@ ptnt servir-visor       # visor de solo lectura  -> http://127.0.0.1:8080
 | `ptnt crear-usuario` | Alta de usuario para las interfaces (solo hash) |
 | `ptnt campo-usuario` | **Crea un usuario de la aplicación móvil** |
 | `ptnt campo-asignar` | **Asigna órdenes de levantamiento a un técnico** |
+| `ptnt campo-repartir` | **Reparte la jornada entre varias cuadrillas**: carga pareja y grupos compactos en el territorio |
 | `ptnt campo-paquete` | **Genera el GeoPackage descargable** con la red del área y la cartografía offline |
+| `ptnt campo-paquetes` | **Genera de una vez el paquete de cada técnico** con trabajo pendiente |
 | `ptnt campo-servir` | **API de sincronización** para la aplicación móvil |
 | `ptnt campo-revisar` | **Revisa los cambios de campo** y determina qué recalcular |
 
@@ -224,7 +226,7 @@ pytest -m security      # auth, secretos, visor
 pytest --cov=ptnt       # cobertura
 ```
 
-**337 pruebas** en verde. Detalle de qué cubre cada archivo y los resultados de la
+**358 pruebas** en verde. Detalle de qué cubre cada archivo y los resultados de la
 demostración extremo a extremo en [`docs/PRUEBAS.md`](docs/PRUEBAS.md).
 
 ## Alcance de esta entrega

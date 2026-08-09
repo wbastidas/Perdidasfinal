@@ -334,7 +334,10 @@ def test_usuario_movil_guarda_solo_el_hash(tmp_path):
     u = reg.crear_usuario("jperez", "Juan Pérez", "clave-larga-2026")
     assert u.password_hash and "clave-larga-2026" not in u.password_hash
     reg.save()
-    assert "clave-larga-2026" not in (tmp_path / "r.json").read_text()
+    # La contraseña en claro no debe aparecer en ningún archivo del almacén,
+    # tampoco en el WAL: ahí es donde acaban las escrituras recientes.
+    for f in tmp_path.iterdir():
+        assert b"clave-larga-2026" not in f.read_bytes(), f.name
 
 
 @pytest.mark.unit

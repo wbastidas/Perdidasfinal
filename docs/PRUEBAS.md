@@ -32,6 +32,7 @@ pytest --cov=ptnt --cov-report=term-missing   # con cobertura
 | `test_escenario_costa_reportes.py` | **Escenario costero** (estacionalidad de Costa y no de Sierra, coordenadas UTM 17S, mezcla realista de clases, rutas con vocación, hurto concentrado en periferia, Tarifa Dignidad solo bajo el techo, las redes llevan clientes reales del padrón, alimentadores distintos entre sí, **cabecera cubre el facturado**), **motor de informes** (enteros sin decimales, tabla vacía y filas omitidas, SVG válido y sin datos, **el mapa conserva la escala real del terreno**, HTML autocontenido, **escapa el contenido de la base de origen**, compendio con saltos de página) |
 | `test_org_carga_historico.py` | **Jerarquía organizacional** (catálogo, columnas obligatorias, alimentador repetido, inferencia advertida, la energía suma hacia arriba, **los porcentajes se recalculan y no se promedian**, **un solo INDICATIVO degrada todo el consolidado**), **carga parcial** (cobertura y faltantes, cargas acumulables, balance MEDIDO exige padrón+red+cabecera, alimentador fuera del universo, pendientes, persistencia, **consolidado incompleto se marca PARCIAL**), **histórico** (serie, re-registro reemplaza, comparación con tendencia, **cambio de configuración invalida la comparación**, advertencias, persistencia, vacío) |
 | `test_campo.py` | **GeoPackage OGC** (geometría ida y vuelta, envolvente, metadatos estándar, **no pierde columnas con filas heterogéneas**, índice espacial, manifiesto interno), **esquema** (Puesto→Unidad editable por separado, guid estable, dominios para el móvil, fotos con ubicación y fecha), **edición topológica** (**mover un cliente arrastra el extremo de su acometida**, mover un puesto arrastra sus unidades, **la relación eléctrica NO arrastra geometría**, tope de propagación, snap, no se elimina un puesto con dependientes, validación), **órdenes** (solo hash, vincular revoca el anterior, asignación masiva, no reasigna en silencio, máquina de estados), **paquete** (recorte al área, manifiesto, aviso por tamaño, huella), **sincronización** (lee el diario, rechaza paquete ajeno, hueco de secuencia bloquea, GPS impreciso advierte, **revisión parcial**, propagación incoherente advierte, **etapas a recalcular**), **histórico** (campo + archivo, historia de un elemento, más editados) |
+| `test_campo_multiusuario.py` | **Concurrencia** (tres cuadrillas sincronizando a la vez no pierden ninguna actualización, la segunda escritura sobre el estado ya consumido no surte efecto, una transición perdida se reporta como conflicto, la asignación en conflicto no deja nada escrito, cierre idempotente, el registro sobrevive al proceso, **migra un registro JSON anterior**), **reparto entre cuadrillas** (equilibra la carga, mantiene juntas las órdenes de cada una, el tope de jornada deja fuera lo de menor energía, sin coordenadas sigue siendo parejo, **es determinista**, aplicar el reparto deja a cada técnico con lo suyo, criterio desconocido falla claro), bitácora y carga por usuario |
 | `test_locations_versioning.py` | **Identidad geográfica estable** (código determinista, agrupa coordenadas cercanas, sectores conservan ubicación al cargar datos nuevos y ante reordenamiento), **registro persistente** (acumula priorizaciones sin inflar por re-ejecución, reincidencia, cierre por inspección, persistencia en disco), **versionado de topología** (alta, sin cambio, cada hash reacciona solo a su dominio, invalidación selectiva por tipo de cambio, historial, **las ubicaciones sobreviven al cambio de red**) |
 
 **Propiedades verificadas (hypothesis):**
@@ -110,6 +111,18 @@ colisión de identificadores entre alimentadores, la contradicción entre el
 diagnóstico y el plan, y un doble conteo de estacionalidad en el escenario.
 Los cuatro están corregidos y con prueba de regresión.
 
+`test_campo_api_multiusuario.py` levanta la **API móvil real** con tres técnicos
+y una jornada repartida, y verifica lo que el técnico ve y lo que nadie ve:
+
+- Cada técnico ve **exactamente** su parte al conectarse — nada de otro.
+- Los tres descargan su paquete **al mismo tiempo** y las 18 órdenes cambian de
+  estado: ninguna actualización se pierde.
+- Sin token, o con uno inventado, no se ve nada (401).
+- Revocar el equipo de un técnico lo deja fuera **sin tocar** a los demás.
+
+El recorrido completo, con reparto, paquetes en lote y verificación final, está en
+`scripts/demo_campo_multiusuario.py` (24 órdenes, 3 cuadrillas, 24/24 correctas).
+
 ## Demostración extremo a extremo con datos ficticios
 
 Además de las suites automáticas, `scripts/demo_completa.py` ejecuta el proceso
@@ -139,7 +152,7 @@ tests los fijan como garantía de regresión.
 ## Estado actual
 
 ```
-337 passed
+358 passed
 ```
 
 Cobertura del núcleo de dominio (objetivo de la especificación ≥ 85 %):

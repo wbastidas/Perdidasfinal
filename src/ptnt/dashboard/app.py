@@ -579,7 +579,6 @@ def main() -> None:
                     try:
                         reg.crear_usuario(nu, nn, np_, rol=RolCampo(nr),
                                           unidad_negocio=nun)
-                        reg.save()
                         st.success(f"Técnico '{nu}' creado.")
                         st.rerun()
                     except (ValueError, KeyError) as exc:
@@ -591,7 +590,6 @@ def main() -> None:
                                     sorted(reg.usuarios), key="rev_disp")
                 if cr2.button("Revocar", type="secondary"):
                     reg.revocar_dispositivo(rev)
-                    reg.save()
                     st.warning(f"Dispositivo de '{rev}' revocado.")
 
         # ---- asignación ----
@@ -618,27 +616,90 @@ def main() -> None:
                 st.dataframe(ot[cols], use_container_width=True, hide_index=True)
 
                 libres = ot[ot["asignada_a"] == ""]["orden_trabajo"].tolist()
-                sel = st.multiselect("Órdenes a asignar", libres,
-                                     default=libres[:5])
-                ca1, ca2 = st.columns([3, 1])
-                dest = ca1.selectbox("Asignar a", sorted(reg.usuarios))
-                radio = ca2.number_input("Radio (m)", 50, 2000, 150, 50)
-                if st.button("Asignar seleccionadas", type="primary",
-                             disabled=not sel):
-                    try:
-                        nuevas = reg.asignar(
-                            ot[ot["orden_trabajo"].isin(sel)], dest,
-                            asignado_por="dashboard", radio_m=float(radio))
-                        reg.save()
-                        st.success(
-                            f"{len(nuevas)} orden(es) asignadas a '{dest}' · "
-                            f"{sum(a.clientes_a_revisar for a in nuevas):,} "
-                            f"clientes · "
-                            f"{sum(a.recuperable_kwh_mes for a in nuevas):,.0f} "
-                            "kWh/mes en juego.")
-                        st.rerun()
-                    except (ValueError, KeyError) as exc:
-                        st.error(str(exc))
+
+                modo_a, modo_b = st.tabs(
+                    ["👥 Repartir entre varias cuadrillas", "👤 Asignar a una"])
+
+                # -- reparto multiusuario --
+                with modo_a:
+                    st.caption(
+                        "Reparte la jornada entre varios técnicos equilibrando la "
+                        "carga **y** manteniendo cada grupo junto en el territorio. "
+                        "Un reparto por sorteo manda a la misma cuadrilla a dos "
+                        "extremos de la ciudad y el traslado se come las visitas."
+                    )
+                    tecnicos = st.multiselect(
+                        "Cuadrillas", sorted(reg.usuarios),
+                        default=sorted(reg.usuarios)[:3], key="rep_users")
+                    r1, r2, r3, r4 = st.columns(4)
+                    n_ot = r1.number_input("Órdenes del ranking", 1,
+                                           max(1, len(libres)),
+                                           min(30, max(1, len(libres))), 1)
+                    crit = r2.selectbox("Equilibrar por",
+                                        ["kwh", "clientes", "visitas"])
+                    tope = r3.number_input("Tope por técnico (0 = sin tope)",
+                                           0, 200, 0, 1)
+                    beta = r4.slider("Cercanía ↔ carga pareja", 0.0, 4.0, 1.0, 0.5,
+                                     help="0 agrupa por cercanía; alto iguala "
+                                          "cargas aunque el recorrido se alargue.")
+
+                    if tecnicos:
+                        from ptnt.field import asignar_reparto, repartir_ordenes
+
+                        base = ot[ot["orden_trabajo"].isin(libres)].head(int(n_ot))
+                        rep = repartir_ordenes(
+                            base, tecnicos, criterio=crit,
+                            max_por_usuario=int(tope) or None,
+                            peso_balance=float(beta))
+                        st.dataframe(rep.resumen(), use_container_width=True,
+                                     hide_index=True)
+                        st.caption(
+                            f"Desbalance entre la cuadrilla más y la menos "
+                            f"cargada: **{rep.desbalance_pct:.1f} %** · "
+                            f"dispersión media del recorrido: "
+                            f"**{rep.resumen()['dispersion_km'].mean():.2f} km**")
+                        for adv in rep.advertencias():
+                            st.warning(adv)
+                        radio_r = st.number_input("Radio del área (m)", 50, 2000,
+                                                  150, 50, key="rep_radio")
+                        if st.button("Aplicar reparto", type="primary"):
+                            try:
+                                hecho = asignar_reparto(
+                                    reg, rep, asignado_por="dashboard",
+                                    radio_m=float(radio_r))
+                                st.success(
+                                    f"{sum(len(v) for v in hecho.values())} "
+                                    f"orden(es) repartidas entre "
+                                    f"{len(tecnicos)} cuadrilla(s). Cada técnico "
+                                    "las verá al conectarse desde la app.")
+                                st.rerun()
+                            except (ValueError, KeyError) as exc:
+                                st.error(str(exc))
+                    else:
+                        st.info("Seleccione al menos una cuadrilla.")
+
+                # -- asignación puntual --
+                with modo_b:
+                    sel = st.multiselect("Órdenes a asignar", libres,
+                                         default=libres[:5])
+                    ca1, ca2 = st.columns([3, 1])
+                    dest = ca1.selectbox("Asignar a", sorted(reg.usuarios))
+                    radio = ca2.number_input("Radio (m)", 50, 2000, 150, 50)
+                    if st.button("Asignar seleccionadas", type="primary",
+                                 disabled=not sel):
+                        try:
+                            nuevas = reg.asignar(
+                                ot[ot["orden_trabajo"].isin(sel)], dest,
+                                asignado_por="dashboard", radio_m=float(radio))
+                            st.success(
+                                f"{len(nuevas)} orden(es) asignadas a '{dest}' · "
+                                f"{sum(a.clientes_a_revisar for a in nuevas):,} "
+                                f"clientes · "
+                                f"{sum(a.recuperable_kwh_mes for a in nuevas):,.0f} "
+                                "kWh/mes en juego.")
+                            st.rerun()
+                        except (ValueError, KeyError) as exc:
+                            st.error(str(exc))
 
         # ---- paquetes ----
         with sub_c:

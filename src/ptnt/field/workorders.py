@@ -16,6 +16,10 @@ El ciclo de una orden es una máquina de estados deliberadamente estricta::
 Las transiciones inválidas se rechazan con un mensaje explícito. Sin esa
 disciplina, una orden puede aparecer "completada" sin haberse descargado nunca, y
 el informe de gestión deja de significar algo.
+
+La persistencia vive en :mod:`ptnt.field.store` (SQLite transaccional). Esta capa
+mantiene los objetos de dominio y la máquina de estados; el almacén garantiza que
+varias cuadrillas sincronizando **al mismo tiempo** no se pisen entre sí.
 """
 
 from __future__ import annotations
@@ -29,6 +33,8 @@ from enum import Enum
 from pathlib import Path
 
 import pandas as pd
+
+from ptnt.field.store import AlmacenCampo, ConflictoConcurrencia
 
 
 class RolCampo(str, Enum):
@@ -145,54 +151,97 @@ class Asignacion:
         d["estado"] = self.estado.value
         return d
 
+    @classmethod
+    def desde_fila(cls, fila: dict) -> "Asignacion":
+        """Reconstruye la asignación desde una fila del almacén."""
+
+        campos = {f for f in cls.__dataclass_fields__}
+        datos = {k: v for k, v in fila.items() if k in campos}
+        datos["estado"] = EstadoOrden(str(fila.get("estado", "ASIGNADA")))
+        for k in ("nivel", "entidad", "feeder_code", "accion", "motivo",
+                  "asignado_por", "fecha_asignacion", "fecha_descarga",
+                  "fecha_inicio", "fecha_cierre", "resultado", "guid"):
+            datos[k] = str(datos.get(k) or "")
+        datos["clientes_a_revisar"] = int(datos.get("clientes_a_revisar") or 0)
+        datos["recuperable_kwh_mes"] = float(datos.get("recuperable_kwh_mes") or 0)
+        datos["radio_m"] = float(datos.get("radio_m") or 150.0)
+        return cls(**datos)
+
 
 def _ahora() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-class RegistroCampo:
-    """Persistencia de usuarios y asignaciones (JSON, sin base de datos).
+def _campo_fecha(nuevo: EstadoOrden) -> dict[str, str]:
+    """Qué marca de tiempo corresponde a cada estado."""
 
-    Se guarda como archivo y no en DuckDB porque la asignación de trabajo debe
-    sobrevivir a un borrado de los resultados de análisis: los cálculos se
+    if nuevo is EstadoOrden.DESCARGADA:
+        return {"fecha_descarga": _ahora()}
+    if nuevo is EstadoOrden.EN_PROCESO:
+        return {"fecha_inicio": _ahora()}
+    if nuevo in (EstadoOrden.COMPLETADA, EstadoOrden.RECHAZADA):
+        return {"fecha_cierre": _ahora()}
+    return {}
+
+
+class RegistroCampo:
+    """Usuarios, asignaciones y ciclo de trabajo sobre un almacén transaccional.
+
+    Se guarda en su propio archivo y no en DuckDB porque la asignación de trabajo
+    debe sobrevivir a un borrado de los resultados de análisis: los cálculos se
     rehacen, un compromiso con una cuadrilla no.
+
+    Toda escritura va directo al almacén: no hay estado en memoria que un segundo
+    proceso pueda pisar. ``save()`` se conserva por compatibilidad y ya no tiene
+    trabajo que hacer.
     """
 
     def __init__(self, ruta: str | Path):
-        self.ruta = Path(ruta)
-        self.usuarios: dict[str, UsuarioCampo] = {}
-        self.asignaciones: dict[str, Asignacion] = {}
-        self._cargar()
+        ruta = Path(ruta)
+        # Se acepta la ruta histórica ``registro.json`` para no romper llamadas
+        # existentes; el archivo real es el ``.db`` hermano.
+        self.ruta_json = ruta if ruta.suffix.lower() == ".json" else None
+        self.ruta = ruta if ruta.suffix.lower() == ".db" else ruta.with_suffix(".db")
+        self.almacen = AlmacenCampo(self.ruta)
+        self._migrar_json()
 
-    def _cargar(self) -> None:
-        if not self.ruta.exists():
+    def _migrar_json(self) -> None:
+        """Importa un registro JSON anterior la primera vez, y solo esa vez."""
+
+        if self.ruta_json is None or not self.ruta_json.exists():
             return
-        d = json.loads(self.ruta.read_text(encoding="utf-8"))
+        if self.almacen.usuarios() or self.almacen.todas():
+            return
+        try:
+            d = json.loads(self.ruta_json.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            return
         for u in d.get("usuarios", []):
-            self.usuarios[u["usuario"]] = UsuarioCampo(
-                usuario=u["usuario"], nombre=u.get("nombre", ""),
-                rol=RolCampo(u.get("rol", "TECNICO")),
-                unidad_negocio=u.get("unidad_negocio", ""),
-                activo=u.get("activo", True),
-                password_hash=u.get("password_hash", ""),
-                token_dispositivo=u.get("token_dispositivo", ""),
-                dispositivo_id=u.get("dispositivo_id", ""),
-                vinculado_en=u.get("vinculado_en", ""),
-                creado_en=u.get("creado_en", ""),
-            )
+            self.almacen.guardar_usuario({**u, "activo": int(bool(u.get("activo", True)))})
+        asigs = []
         for a in d.get("asignaciones", []):
             a = dict(a)
-            a["estado"] = EstadoOrden(a.get("estado", "ASIGNADA"))
-            self.asignaciones[a["orden_trabajo"]] = Asignacion(**a)
+            a.setdefault("guid", str(uuid.uuid4()))
+            asigs.append(a)
+        if asigs:
+            self.almacen.asignar_lote(asigs, actor="migracion",
+                                      permitir_reasignar=True)
 
     def save(self) -> Path:
-        self.ruta.parent.mkdir(parents=True, exist_ok=True)
-        self.ruta.write_text(json.dumps({
-            "usuarios": [u.to_dict(incluir_secretos=True)
-                         for u in self.usuarios.values()],
-            "asignaciones": [a.to_dict() for a in self.asignaciones.values()],
-        }, ensure_ascii=False, indent=2), encoding="utf-8")
+        """No-op: cada operación ya se confirmó en su propia transacción."""
+
         return self.ruta
+
+    # -- lectura de conveniencia -------------------------------------------
+    @property
+    def usuarios(self) -> dict[str, UsuarioCampo]:
+        return {u["usuario"]: _usuario_desde_fila(u)
+                for u in self.almacen.usuarios()}
+
+    @property
+    def asignaciones(self) -> dict[str, Asignacion]:
+        return {a["orden_trabajo"]: Asignacion.desde_fila(a)
+                for a in self.almacen.todas()}
 
     # -- usuarios ----------------------------------------------------------
     def crear_usuario(
@@ -201,7 +250,7 @@ class RegistroCampo:
     ) -> UsuarioCampo:
         """Alta de usuario móvil. La contraseña se guarda **solo** como hash."""
 
-        if usuario in self.usuarios:
+        if self.almacen.usuario(usuario) is not None:
             raise ValueError(f"El usuario '{usuario}' ya existe.")
         if len(password) < 8:
             raise ValueError("La contraseña debe tener al menos 8 caracteres.")
@@ -213,7 +262,7 @@ class RegistroCampo:
             unidad_negocio=unidad_negocio,
             password_hash=hash_password(password), creado_en=_ahora(),
         )
-        self.usuarios[usuario] = u
+        self.almacen.guardar_usuario(_usuario_a_fila(u))
         return u
 
     def vincular_dispositivo(self, usuario: str, dispositivo_id: str) -> str:
@@ -227,26 +276,32 @@ class RegistroCampo:
         u.token_dispositivo = token
         u.dispositivo_id = dispositivo_id
         u.vinculado_en = _ahora()
+        self.almacen.guardar_usuario(_usuario_a_fila(u))
         return token
 
     def revocar_dispositivo(self, usuario: str) -> None:
         u = self._usuario(usuario)
         u.token_dispositivo = ""
         u.dispositivo_id = ""
+        self.almacen.guardar_usuario(_usuario_a_fila(u))
 
     def autenticar_token(self, token: str) -> UsuarioCampo | None:
         if not token:
             return None
-        for u in self.usuarios.values():
-            if u.token_dispositivo and secrets.compare_digest(
-                    u.token_dispositivo, token) and u.activo:
-                return u
-        return None
+        fila = self.almacen.por_token(token)
+        if fila is None:
+            return None
+        u = _usuario_desde_fila(fila)
+        # Comparación en tiempo constante aunque la búsqueda haya sido por índice.
+        if not secrets.compare_digest(u.token_dispositivo, token):
+            return None
+        return u
 
     def _usuario(self, usuario: str) -> UsuarioCampo:
-        if usuario not in self.usuarios:
+        fila = self.almacen.usuario(usuario)
+        if fila is None:
             raise KeyError(f"No existe el usuario '{usuario}'.")
-        return self.usuarios[usuario]
+        return _usuario_desde_fila(fila)
 
     # -- asignaciones ------------------------------------------------------
     def asignar(
@@ -259,27 +314,14 @@ class RegistroCampo:
         completa, no con una orden. Las órdenes ya asignadas a otro usuario se
         rechazan en bloque en vez de reasignarse en silencio — que dos cuadrillas
         vayan al mismo sitio es el desperdicio más común de este trabajo.
+
+        La detección de conflictos y la inserción ocurren dentro de **la misma
+        transacción**: entre comprobar y escribir no cabe otro supervisor.
         """
 
         self._usuario(usuario)
-        conflictos = [
-            o for o in ordenes["orden_trabajo"].astype(str)
-            if o in self.asignaciones
-            and self.asignaciones[o].asignado_a != usuario
-            and self.asignaciones[o].estado not in (
-                EstadoOrden.RECHAZADA, EstadoOrden.SINCRONIZADA)
-        ]
-        if conflictos:
-            raise ValueError(
-                f"{len(conflictos)} orden(es) ya están asignadas a otro técnico: "
-                f"{', '.join(conflictos[:5])}"
-                + ("…" if len(conflictos) > 5 else "")
-                + ". Libérelas primero o asigne otras."
-            )
-
-        nuevas = []
-        for _, r in ordenes.iterrows():
-            a = Asignacion(
+        nuevas = [
+            Asignacion(
                 orden_trabajo=str(r["orden_trabajo"]),
                 asignado_a=usuario,
                 nivel=str(r.get("nivel", "")),
@@ -292,51 +334,140 @@ class RegistroCampo:
                 x=_f(r.get("x")), y=_f(r.get("y")),
                 radio_m=radio_m, asignado_por=asignado_por,
             )
-            self.asignaciones[a.orden_trabajo] = a
-            nuevas.append(a)
+            for _, r in ordenes.iterrows()
+        ]
+        self.almacen.asignar_lote([a.to_dict() for a in nuevas],
+                                  actor=asignado_por, todo_o_nada=True)
         return nuevas
 
     def liberar(self, orden_trabajo: str) -> None:
-        self.asignaciones.pop(orden_trabajo, None)
+        self.almacen.liberar([orden_trabajo])
 
     def de_usuario(self, usuario: str, *, estados: set[EstadoOrden] | None = None
                    ) -> list[Asignacion]:
-        return [a for a in self.asignaciones.values()
-                if a.asignado_a == usuario
-                and (estados is None or a.estado in estados)]
+        est = {e.value for e in estados} if estados else None
+        return [Asignacion.desde_fila(f)
+                for f in self.almacen.de_usuario(usuario, est)]
 
-    def transicionar(self, orden_trabajo: str, nuevo: EstadoOrden) -> Asignacion:
-        if orden_trabajo not in self.asignaciones:
+    def obtener(self, orden_trabajo: str) -> Asignacion | None:
+        f = self.almacen.asignacion(orden_trabajo)
+        return Asignacion.desde_fila(f) if f else None
+
+    def transicionar(self, orden_trabajo: str, nuevo: EstadoOrden, *,
+                     actor: str = "", resultado: str | None = None) -> Asignacion:
+        """Aplica un cambio de estado con verificación de concurrencia.
+
+        La transición se valida contra la máquina de estados y se escribe con
+        ``WHERE estado = <el que se leyó>``. Si otro proceso movió la orden entre
+        medias, no se sobrescribe: se levanta :class:`ConflictoConcurrencia`.
+        """
+
+        actual = self.obtener(orden_trabajo)
+        if actual is None:
             raise KeyError(f"La orden '{orden_trabajo}' no está asignada.")
-        a = self.asignaciones[orden_trabajo]
-        a.transicionar(nuevo)
-        return a
+        desde = actual.estado
+        # Valida (y lanza TransicionInvalida) sobre la copia en memoria.
+        actual.transicionar(nuevo)
+        ok = self.almacen.transicionar(
+            orden_trabajo, desde.value, nuevo.value, actor=actor,
+            campos_fecha=_campo_fecha(nuevo), resultado=resultado)
+        if not ok:
+            raise ConflictoConcurrencia(
+                f"La orden {orden_trabajo} cambió de estado mientras se "
+                f"procesaba (ya no está {desde.value}). Vuelva a consultarla.")
+        if resultado is not None:
+            actual.resultado = resultado
+        return actual
+
+    def marcar_descargadas(self, usuario: str, *, actor: str = "") -> int:
+        """Pasa a DESCARGADA todas las órdenes ASIGNADAS del usuario, de una vez.
+
+        Es lo que ocurre al bajar el paquete: la jornada completa cambia de estado
+        junta. Hacerlo orden por orden dejaría un estado a medias si la conexión
+        se corta — y con la conexión justa antes de salir a campo, se corta.
+        """
+
+        pendientes = [a.orden_trabajo
+                      for a in self.de_usuario(usuario,
+                                               estados={EstadoOrden.ASIGNADA})]
+        return self.almacen.transicionar_lote(
+            pendientes, EstadoOrden.ASIGNADA.value, EstadoOrden.DESCARGADA.value,
+            actor=actor or usuario, campos_fecha={"fecha_descarga": _ahora()})
+
+    def cerrar_orden(self, orden_trabajo: str, *, resultado: str = "",
+                     actor: str = "") -> Asignacion | None:
+        """Lleva una orden a COMPLETADA desde DESCARGADA o EN_PROCESO.
+
+        Devuelve ``None`` si la orden no está en un estado que admita cierre: al
+        sincronizar, una orden ya cerrada por un reenvío no es un error.
+        """
+
+        a = self.obtener(orden_trabajo)
+        if a is None or a.estado not in (EstadoOrden.DESCARGADA,
+                                         EstadoOrden.EN_PROCESO):
+            return None
+        if a.estado is EstadoOrden.DESCARGADA:
+            self.transicionar(orden_trabajo, EstadoOrden.EN_PROCESO, actor=actor)
+        return self.transicionar(orden_trabajo, EstadoOrden.COMPLETADA,
+                                 actor=actor, resultado=resultado)
 
     # -- reportes ----------------------------------------------------------
     def resumen_por_usuario(self) -> pd.DataFrame:
         """Carga de trabajo por técnico: para no sobrecargar a uno y dejar
         ocioso a otro."""
 
-        filas = []
-        for u in self.usuarios.values():
-            asigs = self.de_usuario(u.usuario)
-            por_estado = {e.value: 0 for e in EstadoOrden}
-            for a in asigs:
-                por_estado[a.estado.value] += 1
-            filas.append({
-                "usuario": u.usuario, "nombre": u.nombre, "rol": u.rol.value,
-                "activo": u.activo,
-                "dispositivo": "vinculado" if u.token_dispositivo else "sin vincular",
-                "ordenes": len(asigs),
-                "clientes_a_revisar": sum(a.clientes_a_revisar for a in asigs),
-                "recuperable_kwh_mes": round(
-                    sum(a.recuperable_kwh_mes for a in asigs), 1),
-                **por_estado,
-            })
-        return pd.DataFrame(filas)
+        df = self.almacen.carga_por_usuario()
+        if df.empty:
+            return df
+        df = df.rename(columns={
+            "clientes": "clientes_a_revisar",
+            "asignadas": EstadoOrden.ASIGNADA.value,
+            "descargadas": EstadoOrden.DESCARGADA.value,
+            "en_proceso": EstadoOrden.EN_PROCESO.value,
+            "completadas": EstadoOrden.COMPLETADA.value,
+            "sincronizadas": EstadoOrden.SINCRONIZADA.value,
+        })
+        df[EstadoOrden.RECHAZADA.value] = df.get(
+            EstadoOrden.RECHAZADA.value, 0)
+        df["activo"] = df["activo"].astype(bool)
+        for e in EstadoOrden:
+            df[e.value] = df[e.value].fillna(0).astype(int)
+        return df
+
+    def bitacora(self, limite: int = 200) -> pd.DataFrame:
+        """Quién asignó o movió qué, y cuándo."""
+
+        return self.almacen.bitacora(limite)
 
     def to_dataframe(self) -> pd.DataFrame:
         return pd.DataFrame([a.to_dict() for a in self.asignaciones.values()])
+
+
+def _usuario_a_fila(u: UsuarioCampo) -> dict:
+    d = u.to_dict(incluir_secretos=True)
+    d["unidad_negocio"] = u.unidad_negocio
+    d["activo"] = int(bool(u.activo))
+    return d
+
+
+def _usuario_desde_fila(f: dict) -> UsuarioCampo:
+    """Reconstruye el usuario tal cual está almacenado, hash y token incluidos.
+
+    Quien serializa hacia afuera usa ``to_dict()``, que los omite salvo pedido
+    explícito: el filtro está en la salida, no en la lectura interna.
+    """
+
+    return UsuarioCampo(
+        usuario=str(f["usuario"]), nombre=str(f.get("nombre") or ""),
+        rol=RolCampo(str(f.get("rol") or "TECNICO")),
+        unidad_negocio=str(f.get("unidad_negocio") or ""),
+        activo=bool(f.get("activo", True)),
+        password_hash=str(f.get("password_hash") or ""),
+        token_dispositivo=str(f.get("token_dispositivo") or ""),
+        dispositivo_id=str(f.get("dispositivo_id") or ""),
+        vinculado_en=str(f.get("vinculado_en") or ""),
+        creado_en=str(f.get("creado_en") or ""),
+    )
 
 
 def _f(v) -> float | None:
