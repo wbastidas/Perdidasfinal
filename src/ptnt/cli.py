@@ -1161,6 +1161,102 @@ def _red_de_campo(red: str | None, asigs: list):
 
 
 @app.command()
+def campo_definir(
+    tipo: str = typer.Option(..., "--tipo",
+                             help="INSPECCION_PNT | CENSO | ACTUALIZACION_CARTOGRAFICA | "
+                                  "VERIFICACION_MEDIDOR | MANTENIMIENTO | RECLAMO | OBRA"),
+    clientes: str = typer.Option("outputs/ranking_clientes.parquet", "--clientes",
+                                 help="Padrón o ranking con los clientes"),
+    alimentador: str = typer.Option("", "--alimentador",
+                                    help="Códigos separados por coma"),
+    sector: str = typer.Option("", "--sector", help="Sectores separados por coma"),
+    lista: str = typer.Option("", "--lista",
+                              help="CSV con cuentas, o cuentas separadas por coma"),
+    centro: str = typer.Option("", "--centro", help="x,y del área a revisar"),
+    radio: float = typer.Option(500.0, "--radio", help="Radio del área (m)"),
+    por_orden: int = typer.Option(40, "--por-orden",
+                                  help="Clientes por orden de trabajo"),
+    salida: str = typer.Option("outputs/ordenes_campo.csv", "--salida"),
+    config: str = _CONFIG_OPT,
+):
+    """Define trabajo de campo **sin pasar por el ranking de sospecha**.
+
+    El sistema apunta al hurto, pero una cuadrilla sirve para más: un censo de
+    una zona nueva, una actualización cartográfica, la verificación de un
+    listado del área comercial. Nada de eso sale de un ranking de sospecha —un
+    censo no tiene consumo anómalo que detectar, y justo por eso hay que ir.
+
+    Las órdenes que produce entran al mismo circuito: asignar, repartir,
+    empaquetar, editar sin señal, revisar y recalcular.
+    """
+
+    from ptnt.field import TipoTrabajo, por_alimentador, por_area, por_lista, por_sector
+
+    _cargar(config)
+    ruta = Path(clientes)
+    if not ruta.exists():
+        console.print(f"[red]No existe {clientes}[/].")
+        raise typer.Exit(code=2)
+    df = (pd.read_parquet(ruta) if ruta.suffix == ".parquet"
+          else pd.read_csv(ruta))
+
+    try:
+        t = TipoTrabajo(tipo.upper())
+    except ValueError:
+        console.print(f"[red]Tipo '{tipo}' desconocido.[/] Válidos: "
+                      + ", ".join(x.value for x in TipoTrabajo))
+        raise typer.Exit(code=2)
+
+    if alimentador:
+        d = por_alimentador(df, [a.strip() for a in alimentador.split(",")],
+                            tipo=t, clientes_por_orden=por_orden)
+    elif sector:
+        d = por_sector(df, [s.strip() for s in sector.split(",")], tipo=t)
+    elif lista:
+        fuente = lista if Path(lista).exists() else [c.strip() for c in lista.split(",")]
+        d = por_lista(df, fuente, tipo=t, clientes_por_orden=por_orden)
+    elif centro:
+        try:
+            cx, cy = (float(v) for v in centro.split(","))
+        except ValueError:
+            console.print("[red]--centro debe ser 'x,y' en coordenadas de la red.[/]")
+            raise typer.Exit(code=2)
+        d = por_area(df, x=cx, y=cy, radio_m=radio, tipo=t,
+                     clientes_por_orden=por_orden)
+    else:
+        console.print("[red]Indique el alcance:[/] --alimentador, --sector, "
+                      "--lista o --centro.")
+        raise typer.Exit(code=2)
+
+    for a in d.advertencias:
+        console.print(f"[yellow]⚠ {a}[/]")
+    if d.ordenes.empty:
+        console.print("[red]No se generó ninguna orden.[/]")
+        raise typer.Exit(code=1)
+
+    tabla = Table(title=f"Trabajo definido — {t.value}")
+    for c in ("Orden", "Nivel", "Entidad", "Clientes", "kWh/mes"):
+        tabla.add_column(c, justify="right" if c in ("Clientes", "kWh/mes") else "left")
+    for _, r in d.ordenes.head(15).iterrows():
+        tabla.add_row(str(r["orden_trabajo"]), str(r["nivel"]), str(r["entidad"]),
+                      f"{int(r['clientes_a_revisar']):,}",
+                      f"{float(r['recuperable_kwh_mes']):,.0f}")
+    console.print(tabla)
+    if len(d.ordenes) > 15:
+        console.print(f"  … y {len(d.ordenes) - 15} orden(es) más")
+
+    Path(salida).parent.mkdir(parents=True, exist_ok=True)
+    d.ordenes.to_csv(salida, index=False)
+    console.print(f"[green]✓[/] {len(d.ordenes)} orden(es) · "
+                  f"{d.clientes:,} clientes → [cyan]{salida}[/]")
+    if not t.mide_energia:
+        console.print("  [dim]Esta campaña no se evalúa por kWh recuperados: "
+                      "corrige el denominador del balance, no lo recupera.[/]")
+    console.print(f"  Repártalo con: [cyan]ptnt campo-repartir --ordenes {salida} "
+                  "--usuarios ana,beto[/]")
+
+
+@app.command()
 def campo_repartir(
     usuarios: str = typer.Option(..., "--usuarios",
                                  help="Técnicos separados por coma: ana,beto,carla"),

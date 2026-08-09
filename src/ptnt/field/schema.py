@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from ptnt.field.gpkg import Campo, Capa
 
-VERSION_ESQUEMA = "1.0.0"
+VERSION_ESQUEMA = "1.1.0"
 
 # --------------------------------------------------------------------------- #
 # Dominios (alimentan los desplegables del formulario móvil)
@@ -55,7 +55,20 @@ DOM_HALLAZGO = [
 ]
 DOM_ESTADO_OT = ["ASIGNADA", "DESCARGADA", "EN_PROCESO", "COMPLETADA",
                  "SINCRONIZADA", "RECHAZADA"]
-DOM_OPERACION = ["CREAR", "MODIFICAR", "MOVER", "ELIMINAR"]
+DOM_OPERACION = ["CREAR", "MODIFICAR", "MOVER", "ELIMINAR", "RECONECTAR"]
+
+# Qué se va a hacer en la visita. El sistema nació apuntando al hurto, pero una
+# cuadrilla en la calle sirve para más de eso, y separar el tipo permite medir
+# cada campaña por su cuenta: un censo no se evalúa por kWh recuperados.
+DOM_TIPO_TRABAJO = [
+    "INSPECCION_PNT",            # sospecha de pérdida no técnica (el defecto)
+    "CENSO",                     # levantamiento de clientes no registrados
+    "ACTUALIZACION_CARTOGRAFICA",  # corregir la red dibujada contra la real
+    "VERIFICACION_MEDIDOR",      # contraste de lectura y estado del medidor
+    "MANTENIMIENTO",             # estado de postes, luminarias, seccionadores
+    "RECLAMO",                   # atención de un reclamo puntual
+    "OBRA",                      # alta de red nueva construida
+]
 
 
 def _c(nombre: str, tipo: str = "TEXT", **kw) -> Campo:
@@ -146,7 +159,19 @@ def capas_red() -> list[Capa]:
                 _c("medidor_serie", etiqueta="Serie del medidor"),
                 _c("tipo_acometida", dominio=DOM_TIPO_ACOMETIDA,
                    etiqueta="Tipo de acometida"),
-                _c("puesto_guid", editable=False, etiqueta="Transformador"),
+                # La reconexión es editable **a propósito**. Es la corrección
+                # que más vale de todo el trabajo de campo: un cliente colgado
+                # del transformador equivocado desbalancea las dos zonas a la vez
+                # —una pierde energía que no consumió y la otra la gana— y
+                # produce PNT falsa en ambas. Marcarlo como no editable obligaba
+                # a anotarlo en papel y corregirlo después en oficina, que en la
+                # práctica significa que no se corrige.
+                _c("puesto_guid", etiqueta="Transformador que lo alimenta",
+                   ayuda="Cambiarlo mueve el cliente de zona de balance. "
+                         "Use «Reconectar» para elegirlo del mapa."),
+                _c("unidad_guid", etiqueta="Unidad del banco (fase)",
+                   ayuda="En un banco trifásico, de qué unidad cuelga. "
+                         "Determina a qué fase carga el consumo."),
                 _c("consumo_promedio_kwh", "REAL", editable=False,
                    etiqueta="Consumo promedio (kWh/mes)"),
                 _c("score_sospecha", "REAL", editable=False,
@@ -195,7 +220,11 @@ def capas_red() -> list[Capa]:
                    ayuda="Semáforos y cámaras van como AP NO medido, por regulación"),
                 _c("tipo_ap", etiqueta="Tipo",
                    dominio=["LUMINARIA", "SEMAFORO", "CAMARA"]),
-                _c("puesto_guid", editable=False, etiqueta="Transformador"),
+                # También reconectable: el alumbrado no medido se imputa al
+                # transformador del que cuelga. Colgado del equivocado, esa
+                # energía se le carga a la zona que no la consumió.
+                _c("puesto_guid", etiqueta="Transformador que la alimenta",
+                   ayuda="Determina a qué zona se imputa el consumo de AP."),
             ],
         ),
         Capa(
@@ -254,6 +283,17 @@ def capas_trabajo() -> list[Capa]:
                 _c("fecha_cierre", "DATETIME", etiqueta="Cierre"),
                 _c("resultado", etiqueta="Resultado del levantamiento"),
                 _c("radio_m", "REAL", editable=False, etiqueta="Radio (m)"),
+                _c("tipo_trabajo", editable=False, dominio=DOM_TIPO_TRABAJO,
+                   etiqueta="Tipo de trabajo",
+                   ayuda="Un censo no se evalúa por kWh recuperados"),
+                # Una revisión de campo puede llevar varios días. El estado
+                # EN_PROCESO se mantiene entre jornadas y el avance se sube cada
+                # tarde; estos dos campos son los que permiten al supervisor
+                # distinguir «va por la mitad» de «lleva una semana parada».
+                _c("visitas", "INTEGER", editable=False,
+                   etiqueta="Jornadas trabajadas"),
+                _c("fecha_ultimo_avance", "DATETIME", editable=False,
+                   etiqueta="Último avance sincronizado"),
             ],
         ),
         Capa(
@@ -332,6 +372,14 @@ def capas_trabajo() -> list[Capa]:
                    ayuda="Si el cambio lo causó mover otro elemento (snap)"),
                 _c("estado_revision", editable=False,
                    dominio=["PENDIENTE", "ACEPTADO", "RECHAZADO"]),
+                # Un trabajo de revisión puede llevar varios días. El técnico
+                # sube el avance cada tarde y sigue al siguiente, así que el
+                # diario acumula. Sin marcar lo ya enviado, cada sincronización
+                # reenviaría todo lo anterior y el histórico contaría el mismo
+                # cambio tantas veces como días duró la orden.
+                _c("sincronizado", "BOOLEAN", editable=False,
+                   etiqueta="Ya enviado"),
+                _c("lote_id", editable=False, etiqueta="Lote en que se envió"),
             ],
         ),
     ]

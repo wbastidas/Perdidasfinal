@@ -121,6 +121,11 @@ class Asignacion:
     fecha_inicio: str = ""
     fecha_cierre: str = ""
     resultado: str = ""
+    tipo_trabajo: str = "INSPECCION_PNT"
+    # Jornadas efectivamente trabajadas y cuándo fue la última. Una revisión
+    # puede durar días; sin esto, «EN_PROCESO» no dice nada.
+    visitas: int = 0
+    fecha_ultimo_avance: str = ""
     guid: str = ""
 
     def __post_init__(self) -> None:
@@ -160,8 +165,12 @@ class Asignacion:
         datos["estado"] = EstadoOrden(str(fila.get("estado", "ASIGNADA")))
         for k in ("nivel", "entidad", "feeder_code", "accion", "motivo",
                   "asignado_por", "fecha_asignacion", "fecha_descarga",
-                  "fecha_inicio", "fecha_cierre", "resultado", "guid"):
+                  "fecha_inicio", "fecha_cierre", "resultado", "guid",
+                  "fecha_ultimo_avance"):
             datos[k] = str(datos.get(k) or "")
+        datos["tipo_trabajo"] = str(datos.get("tipo_trabajo")
+                                    or "INSPECCION_PNT")
+        datos["visitas"] = int(datos.get("visitas") or 0)
         datos["clientes_a_revisar"] = int(datos.get("clientes_a_revisar") or 0)
         datos["recuperable_kwh_mes"] = float(datos.get("recuperable_kwh_mes") or 0)
         datos["radio_m"] = float(datos.get("radio_m") or 150.0)
@@ -333,6 +342,7 @@ class RegistroCampo:
                 recuperable_kwh_mes=float(r.get("recuperable_kwh_mes", 0) or 0),
                 x=_f(r.get("x")), y=_f(r.get("y")),
                 radio_m=radio_m, asignado_por=asignado_por,
+                tipo_trabajo=str(r.get("tipo_trabajo") or "INSPECCION_PNT"),
             )
             for _, r in ordenes.iterrows()
         ]
@@ -433,6 +443,16 @@ class RegistroCampo:
         for e in EstadoOrden:
             df[e.value] = df[e.value].fillna(0).astype(int)
         return df
+
+    def anotar_avance(self, orden_trabajo: str, *, actor: str = "") -> bool:
+        """Registra una jornada de trabajo sin cerrar la orden."""
+
+        return self.almacen.anotar_avance(orden_trabajo, actor=actor)
+
+    def estancadas(self, dias: int = 5) -> list[Asignacion]:
+        """Órdenes abiertas que llevan días sin avance."""
+
+        return [Asignacion.desde_fila(f) for f in self.almacen.estancadas(dias)]
 
     def bitacora(self, limite: int = 200) -> pd.DataFrame:
         """Quién asignó o movió qué, y cuándo."""

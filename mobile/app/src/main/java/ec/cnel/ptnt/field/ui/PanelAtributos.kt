@@ -15,6 +15,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Place
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -65,6 +66,8 @@ fun PanelAtributos(
     onEliminar: (String) -> Unit,
     onAbrirRelacionado: (String, String) -> Unit,
     onTomarFoto: () -> Unit,
+    candidatosReconexion: List<Elemento> = emptyList(),
+    onReconectar: (String, String, String) -> Unit = { _, _, _ -> },
 ) {
     // La clave del `remember` es el guid: al cambiar de elemento el borrador se
     // descarta. Sin eso, los valores tecleados en un cliente aparecerían en el
@@ -73,6 +76,7 @@ fun PanelAtributos(
     var confirmarBorrado by remember(elemento.guid) { mutableStateOf(false) }
     var motivo by remember(elemento.guid) { mutableStateOf("") }
     var pestana by remember(elemento.guid) { mutableStateOf(0) }
+    var reconectando by remember(elemento.guid) { mutableStateOf(false) }
 
     Column(modifier) {
         Encabezado(elemento, capa, borrador.size)
@@ -89,7 +93,11 @@ fun PanelAtributos(
                 0 -> FormularioCampos(elemento, capa, borrador) { k, v ->
                     borrador = borrador + (k to v)
                 }
-                1 -> ListaRelacionados(relacionados, onAbrirRelacionado)
+                1 -> ListaRelacionados(
+                    relacionados, onAbrirRelacionado,
+                    puedeReconectar = candidatosReconexion.isNotEmpty(),
+                    puestoActual = elemento.atributos["puesto_guid"]?.toString(),
+                    onReconectar = { reconectando = true })
                 else -> ListaFotos(fotos, onTomarFoto)
             }
         }
@@ -104,6 +112,18 @@ fun PanelAtributos(
             onMover = onMover,
             onEliminar = { confirmarBorrado = true },
             onFoto = onTomarFoto
+        )
+    }
+
+    if (reconectando) {
+        DialogoReconexion(
+            candidatos = candidatosReconexion,
+            actual = elemento.atributos["puesto_guid"]?.toString(),
+            onCerrar = { reconectando = false },
+            onConfirmar = { guid, unidad, razon ->
+                onReconectar(guid, unidad, razon)
+                reconectando = false
+            }
         )
     }
 
@@ -253,6 +273,50 @@ private fun SoloLectura(campo: CampoFormulario, valor: Any?) {
 
 @Composable
 private fun ListaRelacionados(
+    relacionados: List<Relacion>,
+    onAbrir: (String, String) -> Unit,
+    puedeReconectar: Boolean,
+    puestoActual: String?,
+    onReconectar: () -> Unit,
+) {
+    Column(Modifier.fillMaxSize()) {
+        if (puedeReconectar) {
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                modifier = Modifier.fillMaxWidth().padding(8.dp),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Column(Modifier.padding(12.dp)) {
+                    Text("Transformador que lo alimenta",
+                        style = MaterialTheme.typography.labelMedium)
+                    Text(
+                        puestoActual?.takeIf { it.isNotBlank() }?.take(8)
+                            ?: "sin asignar",
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Si en sitio cuelga de otro, corríjalo aquí. Es la " +
+                                "corrección que más pesa: mueve el consumo de " +
+                                "una zona de balance a otra.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Button(onReconectar, Modifier.fillMaxWidth()) {
+                        Icon(Icons.Default.SwapHoriz, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Reconectar a otro transformador")
+                    }
+                }
+            }
+        }
+        ListaRelacionadosInterna(relacionados, onAbrir)
+    }
+}
+
+@Composable
+private fun ListaRelacionadosInterna(
     relacionados: List<Relacion>, onAbrir: (String, String) -> Unit
 ) {
     if (relacionados.isEmpty()) {
@@ -358,6 +422,98 @@ private fun BarraAcciones(
             }
         }
     }
+}
+
+/**
+ * Elección del transformador de destino.
+ *
+ * Se elige de una lista de los más cercanos, **no** se teclea un identificador.
+ * Un guid escrito a mano en un teléfono, de pie y a pleno sol, es la vía directa
+ * a reconectar al transformador equivocado — y ese error es peor que el que se
+ * venía a corregir, porque deja las dos zonas mal y parece intencional.
+ */
+@Composable
+private fun DialogoReconexion(
+    candidatos: List<Elemento>,
+    actual: String?,
+    onCerrar: () -> Unit,
+    onConfirmar: (String, String, String) -> Unit,
+) {
+    var elegido by remember { mutableStateOf<Elemento?>(null) }
+    var razon by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onCerrar,
+        title = { Text("Reconectar a otro transformador") },
+        text = {
+            Column {
+                Text(
+                    "Elija el transformador del que realmente cuelga. Se " +
+                            "recalculará el balance de la zona anterior y de la " +
+                            "nueva.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(Modifier.height(10.dp))
+                LazyColumn(Modifier.heightIn(max = 260.dp)) {
+                    items(candidatos) { c ->
+                        val esActual = c.guid == actual
+                        ListItem(
+                            headlineContent = { Text(c.etiqueta) },
+                            supportingContent = {
+                                Text(
+                                    (c.atributos["potencia_nominal_kva"]
+                                        ?.let { "$it kVA · " } ?: "") +
+                                            (c.atributos["configuracion_banco"]
+                                                ?.toString() ?: "")
+                                )
+                            },
+                            leadingContent = {
+                                RadioButton(
+                                    selected = elegido?.guid == c.guid,
+                                    onClick = { if (!esActual) elegido = c },
+                                    enabled = !esActual
+                                )
+                            },
+                            trailingContent = {
+                                if (esActual) Text(
+                                    "actual",
+                                    style = MaterialTheme.typography.labelMedium
+                                )
+                            },
+                            modifier = Modifier.clickable(enabled = !esActual) {
+                                elegido = c
+                            }
+                        )
+                        Divider()
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    razon, { razon = it },
+                    label = { Text("Cómo lo verificó") },
+                    placeholder = { Text("Seguimiento de acometida, corte de prueba…") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    elegido?.let {
+                        onConfirmar(
+                            it.guid,
+                            it.atributos["unidad_guid"]?.toString().orEmpty(),
+                            razon
+                        )
+                    }
+                },
+                // Sin decir cómo se verificó, la reconexión no es auditable: el
+                // supervisor no puede distinguirla de un toque accidental.
+                enabled = elegido != null && razon.isNotBlank()
+            ) { Text("Reconectar") }
+        },
+        dismissButton = { TextButton(onCerrar) { Text("Cancelar") } }
+    )
 }
 
 @Composable

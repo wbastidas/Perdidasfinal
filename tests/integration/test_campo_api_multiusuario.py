@@ -146,3 +146,180 @@ def test_revocar_el_equipo_lo_deja_fuera(despacho, tmp_path):
     assert cliente.get(
         "/movil/ordenes",
         headers={"Authorization": f"Bearer {tokens['beto']}"}).status_code == 200
+
+
+# --------------------------------------------------------------------------- #
+# Trabajo de varios días y subida simultánea
+# --------------------------------------------------------------------------- #
+def _paquete_editado(ruta: Path, *, ordenes_completadas: list[str],
+                     ordenes_en_proceso: list[str] | None = None,
+                     desde_secuencia: int = 1, n_cambios: int = 2,
+                     ya_sincronizados: int = 0) -> Path:
+    """Simula lo que devuelve el móvil: diario de cambios y estado de órdenes."""
+
+    import sqlite3
+
+    con = sqlite3.connect(ruta)
+    seq = desde_secuencia
+    for i in range(ya_sincronizados):
+        con.execute(
+            "INSERT INTO ptnt_cambio (guid, secuencia, capa, elemento_guid, "
+            "operacion, campo, valor_despues, autor, ocurrido_en, "
+            "estado_revision, sincronizado) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (f"viejo-{seq}", seq, "ptnt_cliente", f"CLI-{seq}", "MODIFICAR",
+             "hallazgo", "NORMAL", "ana", "2026-08-08T10:00:00+00:00",
+             "PENDIENTE", 1))
+        seq += 1
+    for i in range(n_cambios):
+        con.execute(
+            "INSERT INTO ptnt_cambio (guid, secuencia, capa, elemento_guid, "
+            "operacion, campo, valor_despues, autor, ocurrido_en, "
+            "estado_revision, sincronizado) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (f"nuevo-{seq}", seq, "ptnt_cliente", f"CLI-{seq}", "MODIFICAR",
+             "hallazgo", "MEDIDOR_MANIPULADO", "ana",
+             "2026-08-09T10:00:00+00:00", "PENDIENTE", 0))
+        seq += 1
+    for ot in ordenes_completadas:
+        con.execute(
+            "UPDATE ptnt_orden_trabajo SET estado = 'COMPLETADA', "
+            "resultado = 'Hurto confirmado' WHERE orden_trabajo = ?", (ot,))
+    # Abrir una orden en el móvil la pone EN_PROCESO: es lo que distingue una
+    # orden empezada de una que nadie tocó.
+    for ot in (ordenes_en_proceso or []):
+        con.execute(
+            "UPDATE ptnt_orden_trabajo SET estado = 'EN_PROCESO' "
+            "WHERE orden_trabajo = ?", (ot,))
+    con.commit()
+    con.close()
+    return ruta
+
+
+@pytest.mark.integration
+def test_sincronizar_no_cierra_las_ordenes_que_siguen_abiertas(despacho, tmp_path):
+    """Una revisión puede llevar días. Cerrar todo el paquete al sincronizar
+    daría por terminadas órdenes que ni se han empezado."""
+
+    import shutil
+
+    cliente, tokens, rep, registro_ruta = despacho
+    usuario = "ana"
+    mias = list(rep.por_usuario[usuario]["orden_trabajo"])
+    assert len(mias) >= 2
+
+    # El técnico baja el paquete y trabaja solo la primera orden.
+    cliente.get("/movil/paquete",
+                headers={"Authorization": f"Bearer {tokens[usuario]}"})
+    copia = tmp_path / "retorno_dia1.gpkg"
+    shutil.copy(tmp_path / "campo" / "paquetes" / f"{usuario}.gpkg", copia)
+    # Cierra la primera y deja la segunda empezada: el resto ni se abrió.
+    _paquete_editado(copia, ordenes_completadas=[mias[0]],
+                     ordenes_en_proceso=[mias[1]])
+
+    with copia.open("rb") as f:
+        r = cliente.post(
+            "/movil/sincronizar",
+            headers={"Authorization": f"Bearer {tokens[usuario]}"},
+            files={"archivo": ("retorno.gpkg", f, "application/octet-stream")})
+    assert r.status_code == 200, r.text
+    cuerpo = r.json()
+
+    assert cuerpo["ordenes_cerradas"] == [mias[0]]
+    # La empezada sigue abierta y con la jornada anotada.
+    assert cuerpo["ordenes_en_curso"] == [mias[1]]
+    assert "continuar mañana" in cuerpo["mensaje"]
+
+    final = RegistroCampo(registro_ruta)
+    assert final.obtener(mias[0]).estado is EstadoOrden.COMPLETADA
+
+    empezada = final.obtener(mias[1])
+    assert empezada.estado is EstadoOrden.DESCARGADA
+    assert empezada.visitas == 1, "la jornada trabajada debe quedar anotada"
+    assert empezada.fecha_ultimo_avance
+
+    # Las que nadie abrió no cuentan jornada: inflarían el indicador y harían
+    # parecer trabajada una orden que no se visitó.
+    for ot in mias[2:]:
+        intacta = final.obtener(ot)
+        assert intacta.estado is EstadoOrden.DESCARGADA
+        assert intacta.visitas == 0
+
+
+@pytest.mark.integration
+def test_el_avance_ya_enviado_no_se_reprocesa_al_dia_siguiente(despacho, tmp_path):
+    """El diario acumula durante todo el trabajo. Sin marcar lo enviado, cada
+    sincronización reenviaría lo anterior y el histórico contaría el mismo
+    cambio tantas veces como días duró la orden."""
+
+    import shutil
+
+    cliente, tokens, rep, _ = despacho
+    cliente.get("/movil/paquete",
+                headers={"Authorization": f"Bearer {tokens['ana']}"})
+
+    copia = tmp_path / "retorno_dia2.gpkg"
+    shutil.copy(tmp_path / "campo" / "paquetes" / "ana.gpkg", copia)
+    # 3 cambios de ayer (ya enviados) + 2 de hoy.
+    _paquete_editado(copia, ordenes_completadas=[], n_cambios=2,
+                     ya_sincronizados=3)
+
+    with copia.open("rb") as f:
+        r = cliente.post(
+            "/movil/sincronizar",
+            headers={"Authorization": f"Bearer {tokens['ana']}"},
+            files={"archivo": ("retorno.gpkg", f, "application/octet-stream")})
+    assert r.status_code == 200, r.text
+    resumen = r.json()["resumen"]
+    assert resumen["cambios"] == 2, "solo lo nuevo"
+    assert resumen["ya_sincronizados"] == 3
+
+
+@pytest.mark.integration
+def test_tres_tecnicos_suben_su_jornada_a_la_vez(despacho, tmp_path):
+    """Al volver a la base sincronizan todos juntos. Cada lote tiene que llegar
+    entero y a nombre de quien lo hizo."""
+
+    import shutil
+    import threading
+
+    cliente, tokens, rep, registro_ruta = despacho
+    for u, t in tokens.items():
+        cliente.get("/movil/paquete", headers={"Authorization": f"Bearer {t}"})
+
+    copias = {}
+    for u in tokens:
+        c = tmp_path / f"retorno_{u}.gpkg"
+        shutil.copy(tmp_path / "campo" / "paquetes" / f"{u}.gpkg", c)
+        suyas = list(rep.por_usuario[u]["orden_trabajo"])
+        _paquete_editado(c, ordenes_completadas=suyas[:1],
+                         ordenes_en_proceso=suyas[1:2], n_cambios=3)
+        copias[u] = c
+
+    barrera = threading.Barrier(len(tokens))
+    respuestas: dict[str, dict] = {}
+
+    def sube(usuario: str, token: str) -> None:
+        barrera.wait()
+        with copias[usuario].open("rb") as f:
+            r = cliente.post(
+                "/movil/sincronizar",
+                headers={"Authorization": f"Bearer {token}"},
+                files={"archivo": ("r.gpkg", f, "application/octet-stream")})
+        respuestas[usuario] = {"codigo": r.status_code, **r.json()}
+
+    hilos = [threading.Thread(target=sube, args=(u, t)) for u, t in tokens.items()]
+    for h in hilos:
+        h.start()
+    for h in hilos:
+        h.join()
+
+    assert {r["codigo"] for r in respuestas.values()} == {200}, respuestas
+    # Cada lote llegó completo y con su propio identificador.
+    assert len({r["lote_id"] for r in respuestas.values()}) == len(tokens)
+    for u, r in respuestas.items():
+        assert r["resumen"]["cambios"] == 3
+        assert r["resumen"]["usuario"] == u
+
+    final = RegistroCampo(registro_ruta)
+    cerradas = [a for a in final.asignaciones.values()
+                if a.estado is EstadoOrden.COMPLETADA]
+    assert len(cerradas) == len(tokens), "una por técnico, ni más ni menos"

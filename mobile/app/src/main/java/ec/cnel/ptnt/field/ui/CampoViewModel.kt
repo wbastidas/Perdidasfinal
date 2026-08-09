@@ -74,6 +74,11 @@ class CampoViewModel(app: Application) : AndroidViewModel(app) {
     private val _moviendo = MutableStateFlow(false)
     val moviendo: StateFlow<Boolean> = _moviendo.asStateFlow()
 
+    /** Transformadores cercanos a los que se puede reconectar lo seleccionado. */
+    private val _candidatosReconexion = MutableStateFlow<List<Elemento>>(emptyList())
+    val candidatosReconexion: StateFlow<List<Elemento>> =
+        _candidatosReconexion.asStateFlow()
+
     private val _ultimoMovimiento = MutableStateFlow<EditorTopologico.ResultadoMovimiento?>(null)
     val ultimoMovimiento: StateFlow<EditorTopologico.ResultadoMovimiento?> =
         _ultimoMovimiento.asStateFlow()
@@ -186,6 +191,10 @@ class CampoViewModel(app: Application) : AndroidViewModel(app) {
                     val s = r.valor
                     _estado.value = _estado.value.copy(
                         ocupado = false,
+                        // El backend distingue lo cerrado de lo que sigue
+                        // abierto. Decírselo al técnico es lo que le permite
+                        // apagar el teléfono tranquilo en un trabajo de varios
+                        // días.
                         mensaje = s.mensaje.ifBlank {
                             "${s.cambios} cambio(s) y ${s.fotos} foto(s) enviados."
                         },
@@ -267,6 +276,7 @@ class CampoViewModel(app: Application) : AndroidViewModel(app) {
         if (e == null) {
             _relacionados.value = emptyList()
             _fotos.value = emptyList()
+            _candidatosReconexion.value = emptyList()
             return
         }
         viewModelScope.launch {
@@ -276,6 +286,9 @@ class CampoViewModel(app: Application) : AndroidViewModel(app) {
             }
             _relacionados.value = rel
             _fotos.value = fot
+            _candidatosReconexion.value = withContext(Dispatchers.IO) {
+                calcularCandidatos(e)
+            }
         }
     }
 
@@ -305,6 +318,49 @@ class CampoViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun activarMovimiento(activo: Boolean) { _moviendo.value = activo }
+
+    /**
+     * Reconecta el elemento seleccionado a otro transformador.
+     *
+     * Es la corrección que más vale de la jornada y la única que cambia **dos**
+     * balances a la vez: el de la zona que pierde el cliente y el de la que lo
+     * gana. Por eso el mensaje lo dice explícitamente — el técnico tiene que
+     * saber que no está editando un dato más.
+     */
+    fun reconectar(nuevoPuestoGuid: String, unidadGuid: String = "",
+                   motivo: String = "") {
+        val e = _seleccionado.value ?: return
+        val ed = repo.editor(_estado.value.ordenActiva) ?: return
+        ed.ubicacionDispositivo = _posicion.value?.let {
+            EditorTopologico.Ubicacion(it.lat, it.lon, it.precisionM.toDouble())
+        }
+        viewModelScope.launch {
+            val r = withContext(Dispatchers.IO) {
+                ed.reconectar(e, nuevoPuestoGuid, unidadGuid, motivo)
+            }
+            _estado.value = _estado.value.copy(
+                mensaje = if (r.ok) r.mensaje else null,
+                error = if (r.ok) null else r.mensaje,
+                cambiosPendientes = repo.cambiosPendientes)
+            seleccionarPorGuid(e.capa, e.guid)
+        }
+    }
+
+    /** ¿Este elemento cuelga de un transformador? Solo esos se reconectan. */
+    fun esReconectable(e: Elemento): Boolean =
+        e.capa == "ptnt_cliente" || e.capa == "ptnt_luminaria"
+
+    private fun calcularCandidatos(e: Elemento): List<Elemento> {
+        if (!esReconectable(e)) return emptyList()
+        val g = e.geometria ?: return emptyList()
+        val (x, y) = g.coords.first()
+        val ll = repo.aLatLon(x, y)
+        val d = 0.0045                       // ~500 m: alcance de una acometida
+        val cerca = repo.enVentana("ptnt_puesto_transformacion",
+            ll[0] - d, ll[1] - d, ll[0] + d, ll[1] + d, 50)
+        val ed = repo.editor(_estado.value.ordenActiva) ?: return emptyList()
+        return ed.candidatosReconexion(e, cerca)
+    }
 
     /**
      * Mueve el elemento seleccionado al punto tocado, arrastrando lo que

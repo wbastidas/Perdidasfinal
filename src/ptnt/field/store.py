@@ -72,6 +72,12 @@ CREATE TABLE IF NOT EXISTS asignacion (
     fecha_inicio        TEXT NOT NULL DEFAULT '',
     fecha_cierre        TEXT NOT NULL DEFAULT '',
     resultado           TEXT NOT NULL DEFAULT '',
+    tipo_trabajo        TEXT NOT NULL DEFAULT 'INSPECCION_PNT',
+    -- Una revisión de campo puede llevar varios días. Estas dos columnas son
+    -- las que distinguen «va por la mitad» de «lleva una semana parada»: sin
+    -- ellas, una orden EN_PROCESO se ve igual el día 1 que el día 12.
+    visitas             INTEGER NOT NULL DEFAULT 0,
+    fecha_ultimo_avance TEXT NOT NULL DEFAULT '',
     FOREIGN KEY (asignado_a) REFERENCES usuario(usuario)
 );
 
@@ -221,7 +227,8 @@ class AlmacenCampo:
                   "feeder_code", "accion", "motivo", "clientes_a_revisar",
                   "recuperable_kwh_mes", "x", "y", "radio_m", "estado",
                   "asignado_por", "fecha_asignacion", "fecha_descarga",
-                  "fecha_inicio", "fecha_cierre", "resultado")
+                  "fecha_inicio", "fecha_cierre", "resultado", "tipo_trabajo",
+                  "visitas", "fecha_ultimo_avance")
 
         conflictos: list[str] = []
         with self.escritura() as con:
@@ -340,6 +347,41 @@ class AlmacenCampo:
                              detalle={"desde": desde, "hacia": hacia, "n": n})
         return n
 
+    def anotar_avance(self, orden: str, *, actor: str = "") -> bool:
+        """Suma una jornada trabajada sin cerrar la orden.
+
+        Es lo que ocurre cuando un trabajo largo sincroniza al final del día: hay
+        avance real que registrar, pero la orden sigue abierta. Sin esto, un
+        trabajo de una semana es indistinguible de uno abandonado el primer día.
+        """
+
+        with self.escritura() as con:
+            cur = con.execute(
+                "UPDATE asignacion SET visitas = visitas + 1, "
+                "fecha_ultimo_avance = ? "
+                "WHERE orden_trabajo = ? AND estado IN "
+                "('DESCARGADA','EN_PROCESO')",
+                (_ahora(), orden))
+            ok = cur.rowcount > 0
+            if ok:
+                self._anotar(con, "AVANCE", orden=orden, actor=actor)
+        return ok
+
+    def estancadas(self, dias: int = 5) -> list[dict]:
+        """Órdenes abiertas sin avance en N días: dónde se atascó la campaña."""
+
+        from datetime import timedelta
+
+        corte = (datetime.now(timezone.utc) - timedelta(days=dias)).isoformat(
+            timespec="seconds")
+        with self.lectura() as con:
+            filas = con.execute(
+                "SELECT * FROM asignacion WHERE estado IN "
+                "('ASIGNADA','DESCARGADA','EN_PROCESO') "
+                "AND COALESCE(NULLIF(fecha_ultimo_avance,''), fecha_asignacion) < ? "
+                "ORDER BY recuperable_kwh_mes DESC", (corte,)).fetchall()
+        return [dict(f) for f in filas]
+
     def liberar(self, ordenes: list[str], *, actor: str = "") -> int:
         if not ordenes:
             return 0
@@ -373,7 +415,8 @@ class AlmacenCampo:
                        SUM(a.estado = 'DESCARGADA')                AS descargadas,
                        SUM(a.estado = 'EN_PROCESO')                AS en_proceso,
                        SUM(a.estado = 'COMPLETADA')                AS completadas,
-                       SUM(a.estado = 'SINCRONIZADA')              AS sincronizadas
+                       SUM(a.estado = 'SINCRONIZADA')              AS sincronizadas,
+                       COALESCE(SUM(a.visitas), 0)                 AS jornadas
                 FROM usuario u
                 LEFT JOIN asignacion a ON a.asignado_a = u.usuario
                 GROUP BY u.usuario ORDER BY u.usuario

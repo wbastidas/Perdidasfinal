@@ -149,7 +149,11 @@ class ClienteSincronizacion(
         val fotos: Int,
         val bloqueado: Boolean,
         val hallazgos: List<String>,
-        val mensaje: String
+        val mensaje: String,
+        /** Órdenes que el backend dio por terminadas. */
+        val cerradas: List<String> = emptyList(),
+        /** Órdenes que siguen abiertas: el trabajo continúa mañana. */
+        val enCurso: List<String> = emptyList()
     )
 
     /**
@@ -200,14 +204,29 @@ class ClienteSincronizacion(
                         mensajeDeError(texto, r.code), r.code)
                 }
                 val resumen = j.optJSONObject("resumen") ?: JSONObject()
+                val loteId = j.optString("lote_id")
+                val bloqueado = resumen.optBoolean("bloqueado")
+
+                // Se marca lo enviado **después** de la respuesta, nunca antes:
+                // si se marcara al empezar y la subida fallara a mitad, esos
+                // cambios no se volverían a enviar nunca y se perderían en
+                // silencio. Un lote bloqueado tampoco se marca: hay que
+                // reenviarlo cuando el supervisor resuelva los hallazgos.
+                if (!bloqueado && loteId.isNotBlank()) {
+                    dao.marcarSincronizados(loteId)
+                    dao.marcarFotosSincronizadas()
+                }
+
                 Resultado.Ok(
                     ResumenSubida(
-                        loteId = j.optString("lote_id"),
+                        loteId = loteId,
                         cambios = resumen.optInt("cambios"),
                         fotos = resumen.optInt("fotos"),
-                        bloqueado = resumen.optBoolean("bloqueado"),
+                        bloqueado = bloqueado,
                         hallazgos = hallazgos,
-                        mensaje = j.optString("mensaje")
+                        mensaje = j.optString("mensaje"),
+                        cerradas = listaDe(j, "ordenes_cerradas"),
+                        enCurso = listaDe(j, "ordenes_en_curso")
                     )
                 )
             }
@@ -215,6 +234,11 @@ class ClienteSincronizacion(
             Resultado.Error("Fallo la sincronización: ${e.message}. " +
                     "Los cambios siguen guardados en el dispositivo.")
         }
+    }
+
+    private fun listaDe(j: JSONObject, clave: String): List<String> {
+        val arr = j.optJSONArray(clave) ?: return emptyList()
+        return (0 until arr.length()).map { arr.getString(it) }
     }
 
     private fun mensajeDeError(cuerpo: String, codigo: Int): String = when (codigo) {

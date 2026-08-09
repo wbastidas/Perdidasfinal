@@ -132,6 +132,44 @@ class GeoPackageDao(private val archivo: File) {
         return out
     }
 
+    /**
+     * Cambia de qué elemento cuelga otro, en el grafo de conectividad.
+     *
+     * Se hace en una transacción con el borrado del vínculo anterior: si
+     * quedaran los dos, el cliente aparecería colgando de dos transformadores y
+     * su consumo se contaría dos veces en el balance —peor que el error que se
+     * venía a corregir.
+     */
+    fun reemplazarConexion(
+        guidElemento: String, puestoAnterior: String, puestoNuevo: String,
+        capaElemento: String
+    ) {
+        db.beginTransaction()
+        try {
+            if (puestoAnterior.isNotBlank()) {
+                db.execSQL(
+                    """DELETE FROM ptnt_conexion
+                       WHERE tipo_relacion = 'ALIMENTA'
+                         AND ((guid_origen = ? AND guid_destino = ?)
+                           OR (guid_origen = ? AND guid_destino = ?))""",
+                    arrayOf(puestoAnterior, guidElemento,
+                            guidElemento, puestoAnterior)
+                )
+            }
+            val v = android.content.ContentValues().apply {
+                put("guid_origen", puestoNuevo)
+                put("guid_destino", guidElemento)
+                put("tipo_relacion", "ALIMENTA")
+                put("capa_origen", "ptnt_puesto_transformacion")
+                put("capa_destino", capaElemento)
+            }
+            db.insert("ptnt_conexion", null, v)
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
     private fun consultar(capa: String, sql: String, args: Array<String>): List<Elemento> {
         val out = mutableListOf<Elemento>()
         db.rawQuery(sql, args).use { c ->
@@ -275,19 +313,56 @@ class GeoPackageDao(private val archivo: File) {
             put("motivo", c.motivo)
             put("propagado_de", c.propagadoDe)
             put("estado_revision", "PENDIENTE")
+            put("sincronizado", 0)
         }
         db.insert("ptnt_cambio", null, v)
     }
 
+    /**
+     * Siguiente número de secuencia, contando **también** lo ya sincronizado.
+     *
+     * El backend rechaza un diario con huecos —un hueco significa ediciones
+     * perdidas—. Si la numeración se reiniciara al subir, el lote del día
+     * siguiente empezaría en 1 y chocaría con el del día anterior.
+     */
     private fun siguienteSecuencia(): Long {
         db.rawQuery("SELECT COALESCE(MAX(secuencia), 0) + 1 FROM ptnt_cambio", null)
             .use { c -> return if (c.moveToFirst()) c.getLong(0) else 1L }
     }
 
+    /**
+     * Cambios que todavía no se han enviado.
+     *
+     * Un trabajo de revisión puede llevar varios días: el diario acumula y el
+     * técnico sube el avance cada tarde. Contar todo el diario haría que el
+     * contador nunca bajara y que la app pidiera sincronizar lo ya sincronizado.
+     */
     fun cambiosPendientes(): Int {
-        db.rawQuery("SELECT COUNT(*) FROM ptnt_cambio", null).use { c ->
-            return if (c.moveToFirst()) c.getInt(0) else 0
+        db.rawQuery(
+            "SELECT COUNT(*) FROM ptnt_cambio " +
+                    "WHERE COALESCE(sincronizado, 0) = 0", null
+        ).use { c -> return if (c.moveToFirst()) c.getInt(0) else 0 }
+    }
+
+    /**
+     * Marca como enviado lo que el backend acaba de aceptar.
+     *
+     * Se llama **después** de la respuesta del servidor, nunca antes: si se
+     * marcara al empezar la subida y esta fallara a mitad, esos cambios no se
+     * volverían a enviar nunca y se perderían en silencio.
+     */
+    fun marcarSincronizados(loteId: String): Int {
+        val v = android.content.ContentValues().apply {
+            put("sincronizado", 1)
+            put("lote_id", loteId)
         }
+        return db.update("ptnt_cambio", v,
+            "COALESCE(sincronizado, 0) = 0", null)
+    }
+
+    fun marcarFotosSincronizadas(): Int {
+        val v = android.content.ContentValues().apply { put("sincronizada", 1) }
+        return db.update("ptnt_foto", v, "COALESCE(sincronizada, 0) = 0", null)
     }
 
     // ------------------------------------------------------------------ fotos
@@ -408,7 +483,7 @@ enum class TipoRelacion {
     }
 }
 
-enum class Operacion { CREAR, MODIFICAR, MOVER, ELIMINAR }
+enum class Operacion { CREAR, MODIFICAR, MOVER, ELIMINAR, RECONECTAR }
 
 data class CambioCampo(
     val guid: String, val capa: String, val elementoGuid: String,

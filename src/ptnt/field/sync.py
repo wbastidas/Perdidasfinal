@@ -57,6 +57,9 @@ class EstadoRevision(str, Enum):
 
 class Severidad(str, Enum):
     OK = "OK"
+    # Informativo no es una advertencia: describe algo esperado que conviene
+    # decir. Mezclarlos haría que el supervisor dejara de leer las advertencias.
+    INFORMATIVO = "INFORMATIVO"
     ADVERTENCIA = "ADVERTENCIA"
     BLOQUEANTE = "BLOQUEANTE"
 
@@ -102,9 +105,25 @@ class CambioRecibido:
 
     @property
     def afecta_topologia(self) -> bool:
-        """Solo crear/eliminar cambian la conectividad; mover no."""
+        """Qué cambia la conectividad: crear, eliminar y **reconectar**.
 
-        return self.operacion in ("CREAR", "ELIMINAR")
+        Mover no: arrastrar un poste treinta metros no cambia de qué cuelga.
+        Reconectar sí, aunque no toque un solo píxel del mapa — y es el caso que
+        más se paga en el balance.
+        """
+
+        return self.operacion in ("CREAR", "ELIMINAR", "RECONECTAR")
+
+    @property
+    def afecta_dos_zonas(self) -> bool:
+        """Una reconexión mueve energía de una zona a otra.
+
+        Es el único cambio que altera **dos** balances con una sola edición: la
+        zona que pierde el cliente y la que lo gana. Si solo se recalcula la del
+        elemento, una de las dos queda con PNT inventada.
+        """
+
+        return self.operacion == "RECONECTAR"
 
     def to_dict(self) -> dict:
         d = self.__dict__.copy()
@@ -127,6 +146,8 @@ class LoteSincronizacion:
     version_red_origen: str = ""
     # Cambios que llegaron sin autor y se completaron con el dueño del paquete.
     autores_completados: int = 0
+    # Cambios de jornadas anteriores que ya se habían enviado y se ignoraron.
+    cambios_ya_sincronizados: int = 0
 
     @property
     def bloqueado(self) -> bool:
@@ -145,6 +166,7 @@ class LoteSincronizacion:
             "propagados": sum(1 for c in self.cambios if c.propagado_de),
             "por_operacion": por_op, "por_capa": por_capa,
             "fotos": len(self.fotos), "ordenes": len(self.ordenes),
+            "ya_sincronizados": self.cambios_ya_sincronizados,
             "hallazgos": len(self.hallazgos),
             "bloqueado": self.bloqueado,
         }
@@ -168,6 +190,12 @@ class LoteSincronizacion:
 
 def _ahora() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _verdadero(v) -> bool:
+    """SQLite guarda los booleanos como 0/1, pero un cliente puede mandar texto."""
+
+    return str(v).strip().lower() in ("1", "true", "t", "sí", "si", "yes")
 
 
 # --------------------------------------------------------------------------- #
@@ -224,6 +252,13 @@ def recibir_paquete(
         # dueño del paquete —el trabajo de campo no se descarta por un bug de la
         # app— pero se **cuenta y se reporta**: taparlo en silencio convertiría la
         # validación en código muerto y el defecto seguiría llegando cada mes.
+        # Un trabajo de varios días sube avance cada tarde y el diario acumula.
+        # Lo ya enviado se ignora: procesarlo otra vez duplicaría el cambio en el
+        # histórico y el supervisor tendría que revisar dos veces lo mismo.
+        ya_enviados = [f for f in filas if _verdadero(f.get("sincronizado"))]
+        filas = [f for f in filas if not _verdadero(f.get("sincronizado"))]
+        lote.cambios_ya_sincronizados = len(ya_enviados)
+
         sin_autor_original = sum(1 for f in filas if not str(f.get("autor") or ""))
         lote.autores_completados = sin_autor_original
 
@@ -269,9 +304,19 @@ def _validar(lote: LoteSincronizacion) -> list[Hallazgo]:
     h: list[Hallazgo] = []
 
     if not lote.cambios and not lote.fotos:
-        h.append(Hallazgo(
-            Severidad.ADVERTENCIA, "SYNC10",
-            "El paquete no trae cambios ni fotos: la visita no dejó evidencia."))
+        # Si trae cambios de días anteriores ya enviados, no es una visita vacía:
+        # es una sincronización sin novedades, que en un trabajo largo es normal.
+        if lote.cambios_ya_sincronizados:
+            h.append(Hallazgo(
+                Severidad.INFORMATIVO, "SYNC19",
+                f"Sin novedades nuevas. El paquete trae "
+                f"{lote.cambios_ya_sincronizados} cambio(s) ya enviados en "
+                "jornadas anteriores; no se procesan otra vez."))
+        else:
+            h.append(Hallazgo(
+                Severidad.ADVERTENCIA, "SYNC10",
+                "El paquete no trae cambios ni fotos: la visita no dejó "
+                "evidencia."))
 
     # Secuencia sin huecos: el diario es un log incremental. Un hueco significa
     # que se perdieron ediciones, y aceptar el resto dejaría el modelo a medias.
@@ -319,6 +364,26 @@ def _validar(lote: LoteSincronizacion) -> list[Hallazgo]:
             Severidad.ADVERTENCIA, "SYNC14",
             f"{len(sin_meta)} foto(s) sin ubicación o fecha de captura: no "
             "sirven como evidencia del hallazgo."))
+
+    # Una reconexión sin origen y destino no se puede aplicar: no se sabe de qué
+    # zona sale el consumo ni a cuál entra, que es justamente el dato que importa.
+    incompletas = [c for c in lote.cambios
+                   if c.operacion == "RECONECTAR"
+                   and not (c.valor_antes and c.valor_despues)]
+    if incompletas:
+        h.append(Hallazgo(
+            Severidad.BLOQUEANTE, "SYNC17",
+            f"{len(incompletas)} reconexión(es) sin transformador de origen o de "
+            "destino. Sin ambos no se puede mover el consumo de una zona a otra."))
+
+    # Reconectar a sí mismo es un toque accidental, no una corrección.
+    nulas = [c for c in lote.cambios
+             if c.operacion == "RECONECTAR" and c.valor_antes == c.valor_despues]
+    if nulas:
+        h.append(Hallazgo(
+            Severidad.ADVERTENCIA, "SYNC18",
+            f"{len(nulas)} reconexión(es) al mismo transformador que ya tenía: "
+            "probablemente un toque accidental. Revíselas antes de aceptar."))
 
     huerfanos = [c for c in lote.cambios if not c.elemento_guid]
     if huerfanos:
@@ -398,9 +463,12 @@ def revisar(
 ETAPAS_POR_CAMBIO = {
     # Qué hay que recalcular según lo que se tocó. Reutiliza el criterio del
     # versionado de topología: un cambio de atributo no rehace la conectividad.
-    "topologia": {"CREAR", "ELIMINAR"},
+    "topologia": {"CREAR", "ELIMINAR", "RECONECTAR"},
     "atributos": {"MODIFICAR"},
     "geometria": {"MOVER"},
+    # La reconexión se lista aparte porque además obliga a recalcular la zona de
+    # ORIGEN, no solo la de destino.
+    "conectividad": {"RECONECTAR"},
 }
 
 
@@ -412,6 +480,7 @@ class ResultadoAplicacion:
     elementos_afectados: set[str] = field(default_factory=set)
     etapas_a_recalcular: list[str] = field(default_factory=list)
     alimentadores_afectados: set[str] = field(default_factory=set)
+    reconexiones: int = 0
     detalle: str = ""
 
 
@@ -439,10 +508,27 @@ def aplicar(lote: LoteSincronizacion, *,
             f = feeder_por_elemento.get(c.elemento_guid)
             if f:
                 res.alimentadores_afectados.add(f)
+            if c.afecta_dos_zonas:
+                # El transformador de origen y el de destino: el balance de los
+                # dos cambia. Quedarse solo con el del cliente dejaría la zona
+                # que lo perdió con energía facturada que ya no le corresponde.
+                for guid in (c.valor_antes, c.valor_despues):
+                    res.elementos_afectados.add(str(guid or ""))
+                    fz = feeder_por_elemento.get(str(guid or ""))
+                    if fz:
+                        res.alimentadores_afectados.add(fz)
+                res.elementos_afectados.discard("")
+                res.reconexiones += 1
         elif c.estado_revision is EstadoRevision.RECHAZADO:
             res.rechazados += 1
 
     etapas: set[str] = set()
+    if ops & ETAPAS_POR_CAMBIO["conectividad"]:
+        # Reconectar mueve consumo de una zona a otra: hay que rehacer el
+        # balance de las dos y volver a preguntar dónde inspeccionar, porque el
+        # ranking de ambas cambia.
+        etapas |= {"topologia", "flujo", "perdidas", "balance", "focalizacion",
+                   "ranking"}
     if ops & ETAPAS_POR_CAMBIO["topologia"]:
         etapas |= {"topologia", "flujo", "perdidas", "balance", "focalizacion"}
     if ops & ETAPAS_POR_CAMBIO["geometria"]:
@@ -460,6 +546,9 @@ def aplicar(lote: LoteSincronizacion, *,
         f"{res.aplicados} cambio(s) aceptado(s) sobre "
         f"{len(res.elementos_afectados)} elemento(s) de "
         f"{len(res.capas_afectadas)} capa(s). "
+        + (f"{res.reconexiones} reconexión(es) de consumidor: cambian el "
+           f"balance de la zona que pierde el cliente y de la que lo gana. "
+           if res.reconexiones else "")
         + (f"Alimentadores afectados: "
            f"{', '.join(sorted(res.alimentadores_afectados))}. "
            if res.alimentadores_afectados else "")

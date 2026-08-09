@@ -32,6 +32,7 @@ fun PantallaTrabajo(
     onTomarFoto: () -> Unit,
 ) {
     val relacionados by vm.relacionados.collectAsState()
+    val candidatos by vm.candidatosReconexion.collectAsState()
     val fotos by vm.fotos.collectAsState()
     val moviendo by vm.moviendo.collectAsState()
     val posicion by vm.posicion.collectAsState()
@@ -55,8 +56,18 @@ fun PantallaTrabajo(
                 title = {
                     Column {
                         Text(estado.ordenActiva.ifBlank { "Trabajo" })
+                        val visitas = orden?.get("visitas")?.toString()
+                            ?.toIntOrNull() ?: 0
                         Text(
                             orden?.get("entidad")?.toString().orEmpty() +
+                                    (orden?.get("tipo_trabajo")?.toString()
+                                        ?.takeIf { it.isNotBlank() }
+                                        ?.let { "  ·  " + it.replace('_', ' ').lowercase() }
+                                        ?: "") +
+                                    // Un trabajo que lleva días tiene que
+                                    // decirlo: el técnico que retoma una orden
+                                    // ajena necesita saber que ya se avanzó.
+                                    (if (visitas > 0) "  ·  jornada ${visitas + 1}" else "") +
                                     posicion?.let {
                                         "  ·  GPS ±%.0f m".format(it.precisionM)
                                     }.orEmpty(),
@@ -101,7 +112,11 @@ fun PantallaTrabajo(
                 onMover = { vm.activarMovimiento(it) },
                 onEliminar = { vm.eliminarSeleccionado(it) },
                 onAbrirRelacionado = { capa, guid -> vm.seleccionarPorGuid(capa, guid) },
-                onTomarFoto = onTomarFoto
+                onTomarFoto = onTomarFoto,
+                candidatosReconexion = candidatos,
+                onReconectar = { guid, unidad, razon ->
+                    vm.reconectar(guid, unidad, razon)
+                }
             )
         },
         accionesFlotantes = {

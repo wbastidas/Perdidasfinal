@@ -205,6 +205,13 @@ def construir_paquete(
                 "recuperable_kwh_mes": a.recuperable_kwh_mes,
                 "asignado_a": a.asignado_a, "estado": a.estado.value,
                 "fecha_asignacion": a.fecha_asignacion, "radio_m": a.radio_m,
+                "tipo_trabajo": a.tipo_trabajo,
+                # El avance viaja con la orden: si el trabajo lleva tres días, el
+                # técnico tiene que verlo al abrirla y no empezar de cero.
+                "visitas": a.visitas,
+                "fecha_ultimo_avance": a.fecha_ultimo_avance,
+                "fecha_inicio": a.fecha_inicio,
+                "resultado": a.resultado,
             }
             if a.x is not None and a.y is not None:
                 f["geom"] = punto(a.x, a.y)

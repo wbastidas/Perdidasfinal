@@ -116,6 +116,165 @@ técnicos, 24 órdenes, vinculación real por HTTP, descarga simultánea →
 
 ---
 
+## 1.ter Un archivo o varios: la decisión de arquitectura
+
+**Un solo GeoPackage por técnico, con todas sus órdenes dentro.** No un archivo
+por orden. La razón no es comodidad: con un archivo por orden, el sistema
+**pierde correcciones y crea conflictos irresolubles**.
+
+| | Un archivo por técnico *(elegido)* | Un archivo por orden |
+|---|---|---|
+| **Snap y propagación** | La red del área completa está en el mismo archivo: mover un cliente arrastra su acometida aunque el poste pertenezca a otra orden. | Un poste que quedó "en el otro archivo" no existe para el motor de snap. El cliente se mueve y **rompe la conexión sin que la app lo sepa**. |
+| **Solape geográfico** | Los postes, tramos y transformadores compartidos se guardan **una vez**. | Las órdenes de un mismo técnico se solapan: los mismos elementos se duplican N veces. Más MB, más batería. |
+| **Edición del mismo elemento** | Imposible tenerlo dos veces. | El mismo poste editado en dos archivos con valores distintos. Al sincronizar, **no hay forma de decidir cuál gana**. |
+| **Diario de cambios** | Una sola secuencia, ordenable. El backend detecta huecos. | Varias secuencias sin orden relativo: una reconexión en el archivo A y un movimiento del mismo poste en el B llegan sin saber cuál fue antes. |
+| **Atomicidad** | Una transacción SQLite cubre el cambio y su propagación. | Un cambio que toca dos órdenes no es atómico: puede quedar a medias. |
+| **Descarga** | Una petición, un reemplazo atómico. Si se corta, el paquete anterior sigue intacto. | N descargas y estados intermedios: el técnico sale con la mitad del trabajo. |
+
+**Cuándo sí conviene partir**: no por orden, sino por **campaña o zona**, y solo
+cuando el trabajo de un técnico cubre áreas realmente disjuntas —dos cantones,
+por ejemplo—. Ahí el recorte por área ya no ahorra nada y el archivo crece sin
+sentido. El armado del paquete avisa por encima de **60 000 elementos**, que es
+donde el render empieza a degradarse en un equipo de gama baja.
+
+Y sí: **GeoPackage también en el retorno**, no un formato distinto para subir. El
+técnico devuelve *el mismo archivo* que descargó, con el diario dentro. Convertir
+a otro formato al subir añadiría un paso que puede fallar y una traducción que
+puede perder datos, justo en el momento en que el trabajo del día todavía no está
+a salvo en ningún otro sitio.
+
+---
+
+## 1.quater Editar la conexión del consumidor
+
+**Sí, y es la corrección que más vale de toda la visita.**
+
+Un cliente colgado del transformador equivocado desbalancea **dos zonas a la
+vez**: la que lo tiene asignado pierde energía que ese cliente nunca consumió, y
+la que realmente lo alimenta la gana. Los dos balances quedan internamente
+coherentes, así que **ningún análisis desde la oficina lo detecta**. Solo se ve
+siguiendo la acometida en sitio.
+
+En la app, con el cliente seleccionado, la pestaña **Relacionados** muestra de
+qué transformador cuelga y ofrece «Reconectar a otro transformador». El destino
+se elige de una lista de los más cercanos —**no se teclea un identificador**: un
+guid escrito a mano, de pie y a pleno sol, es la vía directa a reconectar al
+equivocado, y ese error es peor que el original porque parece intencional—. Se
+exige decir **cómo se verificó** (seguimiento de acometida, corte de prueba): sin
+eso, el supervisor no puede distinguirlo de un toque accidental.
+
+También se puede fijar de **qué unidad del banco** cuelga, que es lo que
+determina a qué fase carga el consumo. Y las luminarias son reconectables por la
+misma razón: el alumbrado no medido se imputa al transformador del que cuelga.
+
+Lo que ocurre por debajo:
+
+1. Se reescribe el vínculo en el grafo de conectividad **en una transacción** con
+   el borrado del anterior. Si quedaran los dos, el cliente colgaría de dos
+   transformadores y su consumo se contaría dos veces.
+2. Se registra como operación **`RECONECTAR`**, no como `MODIFICAR`. No es un
+   matiz: `MODIFICAR` solo invalida el balance; `RECONECTAR` invalida además
+   **topología, focalización y ranking**, y marca los **dos** transformadores
+   —origen y destino— como afectados.
+3. El backend bloquea una reconexión sin origen o sin destino, y advierte si
+   apunta al mismo transformador que ya tenía.
+
+---
+
+## 1.quinquies Definir el trabajo: no solo lo peor del ranking
+
+El sistema nació apuntando al hurto, pero hay trabajo que **nunca** va a salir de
+un ranking de sospecha: un censo de una zona nueva no tiene consumo anómalo que
+detectar —no hay clientes registrados—, y justo por eso hay que ir. Una zona con
+el SIG viejo no tiene mal balance: lo tiene **incalculable**.
+
+`ptnt campo-definir` genera órdenes por **alimentador, sector, área dibujada o
+lista de cuentas**, con siete tipos de campaña:
+
+```bash
+# Censo de un alimentador completo, en bloques de 40 clientes
+ptnt campo-definir --tipo CENSO --alimentador GYE-04 --por-orden 40
+
+# Verificar un listado que mandó el área comercial
+ptnt campo-definir --tipo VERIFICACION_MEDIDOR --lista cuentas.csv
+
+# Una urbanización nueva: círculo sobre el mapa
+ptnt campo-definir --tipo ACTUALIZACION_CARTOGRAFICA \
+    --centro 631000,9762500 --radio 600
+```
+
+| Tipo | Se evalúa por |
+|---|---|
+| `INSPECCION_PNT` | kWh recuperados |
+| `VERIFICACION_MEDIDOR` | kWh recuperados |
+| `CENSO` | clientes incorporados |
+| `ACTUALIZACION_CARTOGRAFICA` | elementos corregidos |
+| `MANTENIMIENTO` | estructuras revisadas |
+| `RECLAMO` | resolución |
+| `OBRA` | red incorporada |
+
+La distinción no es burocrática: **un censo no recupera energía, corrige el
+denominador del balance**. Evaluarlo por kWh lo haría parecer inútil y dejaría de
+hacerse. Por eso las campañas que no persiguen energía llevan `0` en el campo de
+recuperable, a propósito.
+
+El trabajo se parte en bloques **geográficamente compactos** (recorrido en
+serpentina sobre una grilla), no por orden de lista: una orden con 40 clientes
+repartidos por todo el alimentador es una orden que no se hace. Y las cuentas que
+no aparecen en el padrón **se reportan**: normalmente vienen de otro sistema, y
+descartarlas en silencio manda a la cuadrilla a una dirección que no existe.
+
+Todo entra al mismo circuito: `campo-repartir` → `campo-paquetes` → campo →
+`campo-revisar` → recálculo.
+
+---
+
+## 1.sexties Trabajos de varios días
+
+Una revisión de campo rara vez cabe en una jornada. El ciclo soporta que dure lo
+que dure:
+
+* **Sincronizar no cierra la orden.** Solo se cierran las que el técnico marcó
+  `COMPLETADA` en el dispositivo. Antes se cerraban *todas* las del paquete: la
+  sincronización del primer día daba por terminadas órdenes que ni se habían
+  empezado, y el supervisor veía una jornada completa donde había media mañana.
+* **El avance se cuenta.** Cada sincronización con la orden abierta suma una
+  jornada y sella la fecha. Es lo que distingue «va por la mitad» de «lleva una
+  semana parada» — `RegistroCampo.estancadas(dias)` lista lo segundo.
+* **Lo ya enviado no se reprocesa.** El diario acumula durante todo el trabajo;
+  los cambios subidos quedan marcados con su lote. Sin eso, cada tarde se
+  reenviaría lo anterior y el histórico contaría el mismo cambio tantas veces
+  como días duró la orden.
+* **La numeración no se reinicia.** El backend rechaza un diario con huecos —un
+  hueco significa ediciones perdidas—, así que la secuencia sigue contando sobre
+  todo el diario, incluido lo ya enviado.
+* **El marcado ocurre después del 200 del servidor**, nunca antes. Si se marcara
+  al empezar la subida y esta fallara a mitad, esos cambios no se reenviarían
+  nunca y se perderían en silencio.
+
+Al reabrir la orden, la barra muestra «jornada 3»: el técnico que retoma un
+trabajo ajeno necesita saber que ya se avanzó.
+
+---
+
+## 1.septies Descarga y subida simultáneas
+
+Ambas verificadas contra la API real con tres técnicos a la vez:
+
+* **Descarga**: cada uno recibe su paquete y solo sus órdenes cambian de estado.
+  18/18 correctas.
+* **Subida**: los tres lotes llegan enteros, cada uno con su identificador y a
+  nombre de quien lo hizo; se cierra exactamente una orden por técnico.
+
+Lo que lo hace posible es el almacén transaccional del backend (ver 1.bis) y que
+cada lote entrante se escriba en su propio archivo. Al probarlo apareció un
+defecto que nunca habría dado la cara en desarrollo: `from __future__ import
+annotations` hacía que FastAPI recibiera `UploadFile` como una cadena y no
+pudiera resolverla, así que **`/movil/sincronizar` devolvía 500 con cualquier
+paquete real**. Corregido.
+
+---
+
 ## 2. Por qué GeoPackage y no otra cosa
 
 | | |
@@ -413,6 +572,13 @@ ptnt campo-asignar --usuario jperez --top 10       # asigna la jornada
 ptnt campo-paquete --usuario jperez \
     --teselas cartografia/gye.mbtiles              # arma el .gpkg
 
+# --- definir trabajo que NO sale del ranking ----------------------------
+ptnt campo-definir --tipo CENSO --alimentador GYE-04    # censo completo
+ptnt campo-definir --tipo VERIFICACION_MEDIDOR \
+    --lista cuentas_comercial.csv                      # listado del área
+ptnt campo-definir --tipo ACTUALIZACION_CARTOGRAFICA \
+    --centro 631000,9762500 --radio 600                # área dibujada
+
 # --- despacho a VARIAS cuadrillas ---------------------------------------
 ptnt campo-repartir --usuarios ana,beto,carla \
     --top 30 --criterio kwh                        # simula el reparto
@@ -526,6 +692,42 @@ Leyendo el esquema del propio archivo, la app se adapta sola.
 
 ---
 
+## 14.bis Comparación con ArcGIS Field Maps
+
+La pregunta de fondo es si esto cubre lo que cubre Field Maps sin pagar ArcGIS.
+Lo que sigue es honesto en las dos direcciones:
+
+| Capacidad de Field Maps | Aquí |
+|---|---|
+| Mapa con capas y símbolos | **Sí** — MapLibre GL, render por GPU |
+| Trabajo sin conexión (áreas offline) | **Sí** — el paquete es autocontenido: red, cartografía y formularios |
+| Formularios (Smart Forms) con dominios | **Sí** — y se definen en el backend, sin publicar versión de la app |
+| Edición de atributos y geometría | **Sí** |
+| Snap a elementos existentes | **Sí** |
+| Relaciones entre entidades (related records) | **Sí** — Puesto→Unidad, editable desde el mismo panel |
+| Adjuntos (fotos) | **Sí** — con ubicación, hora, autor y hash SHA-256 |
+| Captura de ubicación del dispositivo | **Sí**, con la precisión a la vista |
+| Interfaz adaptativa tablet/teléfono | **Sí** — lado a lado / hoja deslizante |
+| Sincronización bidireccional | **Sí**, con revisión humana obligatoria antes de aplicar |
+| Cartografía base propia o de terceros | **Sí** — MBTiles libres o caché de ArcGIS Server |
+| **Reconexión topológica con recálculo del balance** | **Sí** — esto Field Maps no lo hace: no conoce el modelo eléctrico |
+| **Invalidación selectiva del análisis** | **Sí** — un cambio dice qué etapas rehacer |
+| Rastreo de recorrido del técnico | **No** — fuera de alcance |
+| Mapas 3D / escenas | **No** |
+| Utility Network de Esri | **No** — el grafo de conectividad es propio y más simple |
+| Marketplace de mapas base en línea | **No** — la cartografía se prepara y se empaqueta |
+
+Lo que **no** está es deliberado: rastrear al técnico es una decisión laboral que
+no corresponde a esta herramienta, y Utility Network resolvería un problema que
+este proyecto no tiene —el grafo que hace falta cabe en una tabla de cinco
+columnas—.
+
+Lo que **sí** está y Field Maps no puede dar es la parte que conoce el dominio:
+un cambio de conexión no es «un atributo editado», es energía que se mueve de una
+zona de balance a otra, y el sistema lo sabe.
+
+---
+
 ## 15. Estado de la entrega
 
 | Componente | Estado |
@@ -534,6 +736,9 @@ Leyendo el esquema del propio archivo, la app se adapta sola.
 | Esquema del paquete (13 capas) | **Completo** |
 | Motor topológico backend | **Completo y probado** |
 | Órdenes, asignación, máquina de estados | **Completo y probado** |
+| Reconexión de consumidor con recálculo de dos zonas | **Completo y probado** |
+| Definición de trabajo por alimentador, sector, área y lista | **Completo y probado** |
+| Trabajos de varios días con avance parcial | **Completo y probado** |
 | Almacén transaccional y concurrencia | **Completo y probado** (68 pruebas de campo) |
 | Reparto entre varias cuadrillas | **Completo y probado** |
 | Paquetes en lote | **Completo y probado** |
@@ -543,7 +748,7 @@ Leyendo el esquema del propio archivo, la app se adapta sola.
 | Histórico de modificaciones | **Completo y probado** |
 | API móvil (FastAPI) | **Completa y probada con varios usuarios a la vez** |
 | Interfaz web de asignación y revisión | **Completa** |
-| CLI de campo (7 comandos) | **Completa** |
+| CLI de campo (8 comandos) | **Completa** |
 | Kotlin: DAO, editor topológico, fotos, sincronización | **Completo** |
 | Kotlin: proyección UTM y códec de geometría | **Completo y probado** (contrato verificado contra Python) |
 | Kotlin: pantallas (vinculación, órdenes, mapa, atributos) | **Completas** |

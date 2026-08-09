@@ -7,6 +7,16 @@ aceptados actualizan el modelo y disparan el recálculo del balance y del rankin
 """
 
 from ptnt.field.distribute import Reparto, asignar_reparto, repartir_ordenes
+from ptnt.field.workdef import (
+    DefinicionTrabajo,
+    TipoTrabajo,
+    desde_plan,
+    por_alimentador,
+    por_area,
+    por_lista,
+    por_sector,
+    unir,
+)
 from ptnt.field.gpkg import Campo, Capa, GeoPackage, linea, punto
 from ptnt.field.package import (
     AreaTrabajo,
@@ -57,6 +67,8 @@ __all__ = [
     "RegistroCampo", "UsuarioCampo", "Asignacion", "RolCampo", "EstadoOrden",
     "TransicionInvalida", "AlmacenCampo", "ConflictoConcurrencia",
     "Reparto", "repartir_ordenes", "asignar_reparto",
+    "TipoTrabajo", "DefinicionTrabajo", "por_alimentador", "por_sector",
+    "por_area", "por_lista", "desde_plan", "unir",
     "construir_paquete", "construir_paquetes", "resumen_paquetes",
     "ResultadoPaquete", "AreaTrabajo", "huella_paquete",
     "recibir_paquete", "revisar", "aplicar", "LoteSincronizacion",

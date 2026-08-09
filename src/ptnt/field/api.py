@@ -20,7 +20,12 @@ el lote en revisión. Aceptar ediciones de red sin revisión humana degradaría 
 SIG en vez de mejorarlo.
 """
 
-from __future__ import annotations
+# Sin `from __future__ import annotations` **a propósito**. Con las anotaciones
+# aplazadas, FastAPI recibe `UploadFile` como una cadena y no puede resolverla:
+# las importaciones de FastAPI son perezosas —para no obligar a instalarla en la
+# máquina que solo calcula— y ocurren dentro de `crear_app`. El resultado era un
+# error 500 en `/movil/sincronizar` que no aparecía hasta subir un paquete real.
+# El proyecto exige Python 3.11, así que `str | Path` funciona sin el import.
 
 import shutil
 import uuid
@@ -167,28 +172,65 @@ def crear_app(
             }, ensure_ascii=False, indent=2, default=str),
             encoding="utf-8")
 
+        cerradas, en_curso = [], []
         if not lote.bloqueado:
             reg = _registro()
+            # **Solo** se cierran las órdenes que el técnico marcó COMPLETADA en
+            # el dispositivo. Cerrar todas las del paquete —como se hacía— rompe
+            # el trabajo de varios días: la sincronización del primer día daría
+            # por terminadas órdenes que ni siquiera se han empezado, y el
+            # supervisor vería una jornada completa donde hay media mañana.
             for o in lote.ordenes:
                 ot = str(o.get("orden_trabajo", ""))
-                # `cerrar_orden` devuelve None si la orden ya se cerró: un reenvío
-                # del mismo paquete no debe fallar ni contar dos veces.
-                reg.cerrar_orden(ot, resultado=str(o.get("resultado", "")),
-                                 actor=u.usuario)
+                if not ot:
+                    continue
+                estado_campo = str(o.get("estado", "")).upper()
+                if estado_campo == "COMPLETADA":
+                    # Devuelve None si ya estaba cerrada: un reenvío del mismo
+                    # paquete no debe fallar ni contar dos veces.
+                    if reg.cerrar_orden(ot, resultado=str(o.get("resultado", "")),
+                                        actor=u.usuario) is not None:
+                        cerradas.append(ot)
+                elif estado_campo == "EN_PROCESO":
+                    # Solo cuenta jornada lo que el técnico **abrió** en el
+                    # dispositivo. Las órdenes que siguen ASIGNADA o DESCARGADA
+                    # no se tocaron: anotarles avance inflaría el indicador y
+                    # haría parecer trabajada una orden que nadie visitó.
+                    if reg.anotar_avance(ot, actor=u.usuario):
+                        en_curso.append(ot)
 
         return JSONResponse({
             "recibido": True,
             "lote_id": lote.lote_id,
             "resumen": lote.resumen(),
+            "ordenes_cerradas": cerradas,
+            "ordenes_en_curso": en_curso,
             "hallazgos": [
                 {"severidad": h.severidad.value, "codigo": h.codigo,
                  "detalle": h.detalle} for h in lote.hallazgos],
             "mensaje": (
-                "Cambios recibidos y pendientes de revisión del supervisor."
+                _mensaje_sync(lote, cerradas, en_curso)
                 if not lote.bloqueado else
                 "El paquete tiene problemas que impiden procesarlo. "
                 "Revise los hallazgos y vuelva a sincronizar."),
         }, status_code=200 if not lote.bloqueado else 422)
+
+    def _mensaje_sync(lote, cerradas: list[str], en_curso: list[str]) -> str:
+        partes = []
+        if lote.cambios:
+            partes.append(f"{len(lote.cambios)} cambio(s) recibidos y "
+                          "pendientes de revisión del supervisor.")
+        if cerradas:
+            partes.append(f"{len(cerradas)} orden(es) cerradas.")
+        if en_curso:
+            # Decirlo importa: el técnico tiene que saber que puede apagar el
+            # teléfono sin perder nada y seguir mañana donde lo dejó.
+            partes.append(
+                f"{len(en_curso)} orden(es) siguen abiertas: el avance quedó "
+                "guardado y puede continuar mañana.")
+        if not partes:
+            partes.append("Sin novedades nuevas que enviar.")
+        return " ".join(partes)
 
     # -- estado ------------------------------------------------------------
     @app.get("/movil/estado")

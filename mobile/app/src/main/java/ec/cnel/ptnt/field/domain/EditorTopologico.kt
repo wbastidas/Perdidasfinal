@@ -248,6 +248,113 @@ class EditorTopologico(
         return cambiados.size
     }
 
+    // ------------------------------------------------------------ reconexión
+    /**
+     * Cambia de qué transformador cuelga un consumidor (o una luminaria).
+     *
+     * Es la corrección que más vale de todo el trabajo de campo, y la única que
+     * altera **dos** balances con una sola edición: la zona que pierde el
+     * cliente y la que lo gana. Un cliente colgado del transformador equivocado
+     * produce PNT falsa en ambas —una pierde energía que no consumió, la otra la
+     * gana— y ninguna cantidad de análisis desde la oficina lo detecta, porque
+     * los dos balances son internamente coherentes.
+     *
+     * No mueve geometría: el cliente sigue donde está. Lo que cambia es el
+     * grafo, así que se reescribe la fila de `ptnt_conexion` y se registra la
+     * operación como `RECONECTAR` —no como `MODIFICAR`— para que el backend
+     * sepa que tiene que rehacer la topología y las dos zonas.
+     */
+    fun reconectar(
+        elemento: Elemento,
+        nuevoPuestoGuid: String,
+        nuevaUnidadGuid: String = "",
+        motivo: String = ""
+    ): Resultado {
+        val anterior = elemento.atributos["puesto_guid"]?.toString().orEmpty()
+        if (nuevoPuestoGuid.isBlank()) {
+            return Resultado(false, "Debe elegir el transformador de destino.")
+        }
+        if (anterior == nuevoPuestoGuid) {
+            return Resultado(false,
+                "Ya estaba conectado a ese transformador: no hay nada que corregir.")
+        }
+        // El destino tiene que estar en el paquete. Reconectar a un guid que el
+        // dispositivo no conoce produce un cambio que el backend no puede
+        // aplicar, y el técnico se entera semanas después.
+        val destino = dao.porGuid("ptnt_puesto_transformacion", nuevoPuestoGuid)
+            ?: return Resultado(false,
+                "El transformador de destino no está en el paquete descargado. " +
+                        "Amplíe el área de trabajo o repórtelo al supervisor.")
+
+        val atributos = mutableMapOf<String, Any?>(
+            "puesto_guid" to nuevoPuestoGuid,
+            "editado_por" to autor,
+            "editado_en" to ahora(),
+            "origen_edicion" to "MOVIL"
+        )
+        if (elemento.capa == "ptnt_cliente") {
+            // La unidad puede quedar vacía a propósito: en un puesto simple no
+            // hay de dónde elegir. Forzar un valor inventaría una fase.
+            atributos["unidad_guid"] = nuevaUnidadGuid.ifBlank { null }
+        }
+        dao.guardar(elemento.capa, elemento.fid, atributos)
+        dao.reemplazarConexion(elemento.guid, anterior, nuevoPuestoGuid,
+            elemento.capa)
+
+        dao.registrarCambio(CambioCampo(
+            guid = UUID.randomUUID().toString(),
+            capa = elemento.capa, elementoGuid = elemento.guid,
+            operacion = Operacion.RECONECTAR,
+            campo = "puesto_guid",
+            valorAntes = anterior.ifBlank { null },
+            valorDespues = nuevoPuestoGuid,
+            ordenTrabajo = ordenTrabajo, autor = autor, ocurridoEn = ahora(),
+            latDispositivo = ubicacionDispositivo?.lat,
+            lonDispositivo = ubicacionDispositivo?.lon,
+            precisionM = ubicacionDispositivo?.precisionM,
+            motivo = motivo.ifBlank { "Reconexión verificada en sitio" }
+        ))
+        if (elemento.capa == "ptnt_cliente" && nuevaUnidadGuid.isNotBlank()) {
+            dao.registrarCambio(CambioCampo(
+                guid = UUID.randomUUID().toString(),
+                capa = elemento.capa, elementoGuid = elemento.guid,
+                operacion = Operacion.MODIFICAR, campo = "unidad_guid",
+                valorAntes = elemento.atributos["unidad_guid"]?.toString(),
+                valorDespues = nuevaUnidadGuid,
+                ordenTrabajo = ordenTrabajo, autor = autor, ocurridoEn = ahora(),
+                motivo = "Fase del banco verificada en sitio"
+            ))
+        }
+
+        val codigo = destino.atributos["codigo"]?.toString() ?: nuevoPuestoGuid.take(8)
+        return Resultado(true, "Reconectado a $codigo. Cambia el balance de la " +
+                "zona anterior y de la nueva.")
+    }
+
+    data class Resultado(val ok: Boolean, val mensaje: String)
+
+    /**
+     * Transformadores candidatos para reconectar, ordenados por cercanía.
+     *
+     * Se listan los que están en el paquete: el técnico elige de una lista corta
+     * en vez de teclear un identificador, que es la vía directa a reconectar al
+     * transformador equivocado.
+     */
+    fun candidatosReconexion(
+        elemento: Elemento, disponibles: List<Elemento>, maximo: Int = 8
+    ): List<Elemento> {
+        val g = elemento.geometria ?: return disponibles.take(maximo)
+        val (x, y) = g.coords.first()
+        return disponibles
+            .filter { it.capa == "ptnt_puesto_transformacion" && it.guid != elemento.guid }
+            .sortedBy { c ->
+                c.geometria?.coords?.firstOrNull()?.let { (cx, cy) ->
+                    hypot(cx - x, cy - y)
+                } ?: Double.MAX_VALUE
+            }
+            .take(maximo)
+    }
+
     // ----------------------------------------------------------------- altas
     fun crear(
         capa: String, atributos: Map<String, Any?>, geometria: Geometria?,
