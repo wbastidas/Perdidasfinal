@@ -156,10 +156,11 @@ def main() -> None:
         f"Método de demanda: **{met.get('metodo_demanda','-')}**"
     )
 
-    tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
+    tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
         ["📍 Dónde inspeccionar", "🎯 Sospecha de hurto",
          "🔌 Reconciliación de potencia", "📈 Cliente", "⚖️ Balance de red",
-         "🏢 Unidad y subestación", "📅 Histórico", "📥 Carga de datos"]
+         "🏢 Unidad y subestación", "📅 Histórico", "📥 Carga de datos",
+         "📱 Trabajo de campo"]
     )
 
     # -- V7: focalización de levantamientos (§11.5) --------------------------
@@ -527,6 +528,221 @@ def main() -> None:
                     use_container_width=True, hide_index=True)
             else:
                 st.caption("Sin cargas registradas todavía.")
+
+
+    # -- V13: trabajo de campo (asignación, paquetes, revisión) ---------------
+    with tab8:
+        st.subheader("Trabajo de campo: asignar, entregar y revisar")
+        st.caption(
+            "El ciclo completo: el análisis dice dónde ir → se asignan órdenes a "
+            "un técnico → se arma un GeoPackage con la red del área y la "
+            "cartografía offline → el técnico edita sin señal → sube los cambios "
+            "→ **el supervisor los revisa** → los aceptados actualizan el modelo "
+            "y disparan el recálculo."
+        )
+        from ptnt.field import EstadoOrden, RegistroCampo, RolCampo
+        from ptnt.field.sync import HistoricoCambios
+
+        dir_campo = Path(cfg.rutas.salidas) / "campo"
+        dir_campo.mkdir(parents=True, exist_ok=True)
+        reg = RegistroCampo(dir_campo / "registro.json")
+
+        sub_a, sub_b, sub_c, sub_d = st.tabs(
+            ["👷 Técnicos", "📋 Asignar trabajo", "📦 Paquetes",
+             "🔍 Revisar cambios"])
+
+        # ---- técnicos ----
+        with sub_a:
+            st.markdown("#### Usuarios de la aplicación móvil")
+            st.caption(
+                "Se crean **aquí**, nunca en el dispositivo: quién puede editar "
+                "la red es una decisión administrativa. Cada teléfono recibe un "
+                "token revocable; si se pierde el equipo, se revoca y deja de "
+                "sincronizar sin tocar la cuenta del técnico."
+            )
+            if reg.usuarios:
+                st.dataframe(reg.resumen_por_usuario(),
+                             use_container_width=True, hide_index=True)
+            else:
+                st.info("Aún no hay técnicos registrados.")
+
+            with st.form("nuevo_tecnico"):
+                c1, c2 = st.columns(2)
+                nu = c1.text_input("Usuario")
+                nn = c2.text_input("Nombre completo")
+                c3, c4 = st.columns(2)
+                nr = c3.selectbox("Rol", [r.value for r in RolCampo])
+                nun = c4.text_input("Unidad de negocio", value=cfg.proyecto.unidad_negocio)
+                np_ = st.text_input("Contraseña inicial", type="password",
+                                    help="Mínimo 8 caracteres. Se guarda solo el hash.")
+                if st.form_submit_button("Crear técnico"):
+                    try:
+                        reg.crear_usuario(nu, nn, np_, rol=RolCampo(nr),
+                                          unidad_negocio=nun)
+                        reg.save()
+                        st.success(f"Técnico '{nu}' creado.")
+                        st.rerun()
+                    except (ValueError, KeyError) as exc:
+                        st.error(str(exc))
+
+            if reg.usuarios:
+                cr1, cr2 = st.columns([3, 1])
+                rev = cr1.selectbox("Revocar dispositivo de",
+                                    sorted(reg.usuarios), key="rev_disp")
+                if cr2.button("Revocar", type="secondary"):
+                    reg.revocar_dispositivo(rev)
+                    reg.save()
+                    st.warning(f"Dispositivo de '{rev}' revocado.")
+
+        # ---- asignación ----
+        with sub_b:
+            ot_path = Path(cfg.rutas.salidas) / "ordenes_levantamiento.csv"
+            if not ot_path.exists():
+                st.info("Sin órdenes de trabajo. Ejecute `ptnt focalizar` primero.")
+            elif not reg.usuarios:
+                st.info("Cree al menos un técnico en la pestaña anterior.")
+            else:
+                ot = pd.read_csv(ot_path)
+                asignadas = set(reg.asignaciones)
+                ot["asignada_a"] = ot["orden_trabajo"].map(
+                    lambda o: reg.asignaciones[o].asignado_a
+                    if o in asignadas else "")
+                st.markdown("#### Órdenes disponibles")
+                st.caption(
+                    "Ordenadas por energía recuperable por visita. Seleccione "
+                    "varias y asígnelas de una vez: una cuadrilla sale con la "
+                    "jornada completa, no con una orden.")
+                cols = [c for c in ["orden_trabajo", "nivel", "entidad",
+                                    "clientes_a_revisar", "kwh_por_visita",
+                                    "accion", "asignada_a"] if c in ot.columns]
+                st.dataframe(ot[cols], use_container_width=True, hide_index=True)
+
+                libres = ot[ot["asignada_a"] == ""]["orden_trabajo"].tolist()
+                sel = st.multiselect("Órdenes a asignar", libres,
+                                     default=libres[:5])
+                ca1, ca2 = st.columns([3, 1])
+                dest = ca1.selectbox("Asignar a", sorted(reg.usuarios))
+                radio = ca2.number_input("Radio (m)", 50, 2000, 150, 50)
+                if st.button("Asignar seleccionadas", type="primary",
+                             disabled=not sel):
+                    try:
+                        nuevas = reg.asignar(
+                            ot[ot["orden_trabajo"].isin(sel)], dest,
+                            asignado_por="dashboard", radio_m=float(radio))
+                        reg.save()
+                        st.success(
+                            f"{len(nuevas)} orden(es) asignadas a '{dest}' · "
+                            f"{sum(a.clientes_a_revisar for a in nuevas):,} "
+                            f"clientes · "
+                            f"{sum(a.recuperable_kwh_mes for a in nuevas):,.0f} "
+                            "kWh/mes en juego.")
+                        st.rerun()
+                    except (ValueError, KeyError) as exc:
+                        st.error(str(exc))
+
+        # ---- paquetes ----
+        with sub_c:
+            st.markdown("#### Generar el paquete descargable")
+            st.caption(
+                "Contiene **solo** la red del área de las órdenes asignadas, más "
+                "el contexto topológico necesario. Bajar la red completa a un "
+                "teléfono de gama baja lo vuelve inusable."
+            )
+            if not reg.asignaciones:
+                st.info("Sin órdenes asignadas.")
+            else:
+                usuarios_con = sorted({a.asignado_a for a in reg.asignaciones.values()})
+                up = st.selectbox("Técnico", usuarios_con, key="usr_paq")
+                asigs = reg.de_usuario(up)
+                st.write(f"**{len(asigs)} orden(es)** · "
+                         f"{sum(a.clientes_a_revisar for a in asigs):,} clientes")
+                st.dataframe(pd.DataFrame([{
+                    "orden": a.orden_trabajo, "nivel": a.nivel,
+                    "entidad": a.entidad, "estado": a.estado.value,
+                    "clientes": a.clientes_a_revisar,
+                } for a in asigs]), use_container_width=True, hide_index=True)
+
+                st.caption(
+                    "La generación del paquete requiere la red migrada. Use "
+                    "`ptnt campo-paquete --usuario " + up + "` desde la línea de "
+                    "comandos, o el script de demostración "
+                    "`scripts/demo_campo.py`.")
+
+                paq = dir_campo / "paquetes" / f"{up}.gpkg"
+                if paq.exists():
+                    st.success(f"Paquete disponible: {paq.name} "
+                               f"({paq.stat().st_size/1e6:.1f} MB)")
+                    with open(paq, "rb") as fh:
+                        st.download_button("Descargar .gpkg", fh.read(),
+                                           file_name=paq.name,
+                                           mime="application/geopackage+sqlite3")
+
+        # ---- revisión ----
+        with sub_d:
+            st.markdown("#### Cambios recibidos del campo")
+            st.caption(
+                "**Nada entra al modelo sin revisión.** Un técnico puede "
+                "equivocarse de elemento o capturar con el GPS derivando: "
+                "aceptar a ciegas degradaría el SIG en vez de mejorarlo."
+            )
+            lotes_dir = dir_campo / "lotes"
+            lotes = sorted(lotes_dir.glob("*.json")) if lotes_dir.exists() else []
+            if not lotes:
+                st.info("Sin lotes pendientes de revisión.")
+            else:
+                nombres = [l.stem for l in lotes]
+                sel_l = st.selectbox("Lote", nombres)
+                datos = json.loads(
+                    (lotes_dir / f"{sel_l}.json").read_text(encoding="utf-8"))
+
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Cambios", len(datos.get("cambios", [])))
+                c2.metric("Fotos", len(datos.get("fotos", [])))
+                c3.metric("Técnico", datos.get("usuario", "-"))
+
+                for h in datos.get("hallazgos", []):
+                    if h["severidad"] == "BLOQUEANTE":
+                        st.error(f"[{h['codigo']}] {h['detalle']}")
+                    else:
+                        st.warning(f"[{h['codigo']}] {h['detalle']}")
+
+                camb = pd.DataFrame(datos.get("cambios", []))
+                if not camb.empty:
+                    cols = [c for c in ["secuencia", "capa", "elemento_guid",
+                                        "operacion", "campo", "valor_antes",
+                                        "valor_despues", "propagado_de",
+                                        "precision_m", "motivo"]
+                            if c in camb.columns]
+                    st.dataframe(camb[cols], use_container_width=True,
+                                 hide_index=True)
+                    st.caption(
+                        "Los cambios con `propagado_de` no los hizo el técnico "
+                        "directamente: se movieron porque se movió otro elemento. "
+                        "Aceptar el origen y rechazar el propagado dejaría la red "
+                        "desconectada en ese punto.")
+
+                st.caption(
+                    "La aceptación se realiza con `ptnt campo-revisar "
+                    f"--lote {sel_l}`, que aplica los cambios y dispara el "
+                    "recálculo de las etapas afectadas.")
+
+            hist_c = HistoricoCambios(dir_campo / "historico_cambios.parquet")
+            if not hist_c.df.empty:
+                st.markdown("#### Histórico de modificaciones de la red")
+                st.caption(
+                    "Acumula tanto las ediciones de campo como las cargas desde "
+                    "archivo: la pregunta de auditoría es siempre la misma —"
+                    "*¿quién cambió esto, cuándo y por qué?*— y la respuesta no "
+                    "puede depender de por qué puerta entró el cambio.")
+                st.dataframe(hist_c.resumen_por_origen(),
+                             use_container_width=True, hide_index=True)
+                mas = hist_c.elementos_mas_editados(10)
+                if not mas.empty:
+                    st.markdown("**Elementos que más cambian**")
+                    st.caption(
+                        "Casi siempre son un problema de datos de origen, no una "
+                        "red que se modifica tanto.")
+                    st.dataframe(mas, use_container_width=True, hide_index=True)
 
 
 if __name__ == "__main__":  # pragma: no cover

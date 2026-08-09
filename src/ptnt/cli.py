@@ -922,5 +922,235 @@ def consolidar(
         for adv in hist.advertencias():
             console.print(f"[yellow]⚠ {adv}[/]")
 
+
+@app.command()
+def campo_usuario(
+    usuario: str = typer.Argument(..., help="Nombre de usuario móvil"),
+    nombre: str = typer.Option(..., "--nombre", help="Nombre completo"),
+    rol: str = typer.Option("TECNICO", "--rol", help="TECNICO|SUPERVISOR|LECTOR"),
+    unidad: str = typer.Option("", "--unidad", help="Unidad de negocio"),
+    config: str = _CONFIG_OPT,
+):
+    """Crea un usuario de la aplicación móvil (contraseña por prompt seguro)."""
+
+    from ptnt.field import RegistroCampo, RolCampo
+
+    cfg = _cargar(config)
+    ruta = Path(cfg.rutas.salidas) / "campo" / "registro.json"
+    reg = RegistroCampo(ruta)
+    password = typer.prompt("Contraseña", hide_input=True, confirmation_prompt=True)
+    try:
+        u = reg.crear_usuario(usuario, nombre, password, rol=RolCampo(rol.upper()),
+                              unidad_negocio=unidad)
+    except (ValueError, KeyError) as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=2)
+    reg.save()
+    console.print(f"[green]✓[/] Usuario móvil [cyan]{u.usuario}[/] ({u.rol.value}) "
+                  f"creado en {ruta}")
+    console.print("  El técnico vincula su equipo desde la app; el token se emite "
+                  "en ese momento y se puede revocar.")
+
+
+@app.command()
+def campo_asignar(
+    usuario: str = typer.Option(..., "--usuario", help="Técnico destinatario"),
+    ordenes: str = typer.Option("outputs/ordenes_levantamiento.csv", "--ordenes"),
+    top: int = typer.Option(10, "--top", help="Cuántas órdenes asignar"),
+    radio: float = typer.Option(150.0, "--radio", help="Radio del área (m)"),
+    config: str = _CONFIG_OPT,
+):
+    """Asigna órdenes de levantamiento a un técnico de campo."""
+
+    from ptnt.field import RegistroCampo
+
+    cfg = _cargar(config)
+    if not Path(ordenes).exists():
+        console.print(f"[red]No existe {ordenes}[/]. Ejecute [cyan]ptnt focalizar[/].")
+        raise typer.Exit(code=2)
+
+    reg = RegistroCampo(Path(cfg.rutas.salidas) / "campo" / "registro.json")
+    df = pd.read_csv(ordenes).head(top)
+    try:
+        nuevas = reg.asignar(df, usuario, asignado_por="cli", radio_m=radio)
+    except (ValueError, KeyError) as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=2)
+    reg.save()
+
+    tabla = Table(title=f"Órdenes asignadas a {usuario}")
+    for c in ("Orden", "Nivel", "Entidad", "Clientes", "kWh/mes"):
+        tabla.add_column(c, justify="right" if c in ("Clientes", "kWh/mes") else "left")
+    for a in nuevas:
+        tabla.add_row(a.orden_trabajo, a.nivel, a.entidad,
+                      f"{a.clientes_a_revisar:,}", f"{a.recuperable_kwh_mes:,.0f}")
+    console.print(tabla)
+    console.print(f"[green]✓[/] {len(nuevas)} orden(es) · "
+                  f"{sum(a.clientes_a_revisar for a in nuevas):,} clientes · "
+                  f"{sum(a.recuperable_kwh_mes for a in nuevas):,.0f} kWh/mes")
+    console.print("  Genere el paquete con: "
+                  f"[cyan]ptnt campo-paquete --usuario {usuario}[/]")
+
+
+@app.command()
+def campo_revisar(
+    lote: str = typer.Argument(..., help="Identificador del lote recibido"),
+    aceptar_todo: bool = typer.Option(False, "--aceptar-todo"),
+    rechazar: str = typer.Option("", "--rechazar",
+                                 help="Secuencias a rechazar, separadas por coma"),
+    revisor: str = typer.Option("supervisor", "--revisor"),
+    config: str = _CONFIG_OPT,
+):
+    """Revisa un lote de cambios de campo y determina qué recalcular."""
+
+    import json as _json
+
+    from ptnt.field.sync import (
+        CambioRecibido, EstadoRevision, HistoricoCambios, LoteSincronizacion,
+        aplicar, revisar,
+    )
+
+    cfg = _cargar(config)
+    dir_campo = Path(cfg.rutas.salidas) / "campo"
+    archivo = dir_campo / "lotes" / f"{lote}.json"
+    if not archivo.exists():
+        console.print(f"[red]No existe el lote {lote}[/] en {archivo.parent}")
+        raise typer.Exit(code=2)
+
+    d = _json.loads(archivo.read_text(encoding="utf-8"))
+    obj = LoteSincronizacion(
+        lote_id=d["lote_id"], usuario=d.get("usuario", ""),
+        paquete_id=d.get("paquete_id", ""), recibido_en=d.get("recibido_en", ""),
+        fotos=d.get("fotos", []), ordenes=d.get("ordenes", []),
+    )
+    for c in d.get("cambios", []):
+        c = dict(c)
+        c["estado_revision"] = EstadoRevision(c.get("estado_revision", "PENDIENTE"))
+        obj.cambios.append(CambioRecibido(**c))
+
+    console.print(f"\n[bold]Lote {lote}[/] · técnico {obj.usuario}")
+    console.print(obj.to_dataframe().to_string(index=False))
+
+    rech = [int(x) for x in rechazar.split(",") if x.strip().isdigit()]
+    acep = [c.secuencia for c in obj.cambios if c.secuencia not in rech] \
+        if (aceptar_todo or rech) else []
+    try:
+        r = revisar(obj, aceptar=acep, rechazar=rech, revisor=revisor)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=2)
+
+    console.print(f"\n[green]Aceptados: {r['aceptados']}[/] · "
+                  f"[yellow]Rechazados: {r['rechazados']}[/]")
+    if r["advertencia"]:
+        console.print(f"[bold yellow]⚠ {r['advertencia']}[/]")
+
+    ap = aplicar(obj)
+    console.print(f"\n[bold]{ap.detalle}[/]")
+    if ap.etapas_a_recalcular:
+        console.print("\n[bold]Recálculo necesario:[/]")
+        for e in ap.etapas_a_recalcular:
+            console.print(f"  • {e}")
+        console.print("\n  Ejecute: [cyan]ptnt analizar-red[/] y "
+                      "[cyan]ptnt focalizar[/] para actualizar el balance y el "
+                      "ranking con estos cambios.")
+
+    hist = HistoricoCambios(dir_campo / "historico_cambios.parquet")
+    n = hist.registrar_lote(obj)
+    hist.save()
+    console.print(f"[green]✓[/] {n} cambio(s) al histórico permanente")
+
+
+@app.command()
+def campo_servir(
+    host: str = typer.Option("127.0.0.1", "--host"),
+    puerto: int = typer.Option(8090, "--puerto"),
+    config: str = _CONFIG_OPT,
+):
+    """Lanza la API de sincronización para la aplicación móvil."""
+
+    import uvicorn
+
+    from ptnt.field.api import crear_app
+
+    cfg = _cargar(config)
+    dir_campo = Path(cfg.rutas.salidas) / "campo"
+    console.print(f"[green]API móvil[/] en http://{host}:{puerto}")
+    console.print(f"  Registro:  {dir_campo / 'registro.json'}")
+    console.print(f"  Paquetes:  {dir_campo / 'paquetes'}")
+    uvicorn.run(
+        crear_app(
+            registro_ruta=dir_campo / "registro.json",
+            paquetes_dir=dir_campo / "paquetes",
+            entrantes_dir=dir_campo / "entrantes",
+            lotes_dir=dir_campo / "lotes",
+        ),
+        host=host, port=puerto,
+    )
+
+
+@app.command()
+def campo_paquete(
+    usuario: str = typer.Option(..., "--usuario", help="Técnico destinatario"),
+    red: str = typer.Option(None, "--red",
+                            help="DuckDB/Parquet con la red migrada; omitir usa el escenario de demo"),
+    teselas: str = typer.Option(None, "--teselas",
+                                help="MBTiles de cartografía base (open source o caché de ArcGIS Server)"),
+    margen: float = typer.Option(250.0, "--margen", help="Margen alrededor del área (m)"),
+    config: str = _CONFIG_OPT,
+):
+    """Genera el GeoPackage descargable con la red del área de trabajo."""
+
+    from ptnt.field import RegistroCampo, construir_paquete
+
+    cfg = _cargar(config)
+    dir_campo = Path(cfg.rutas.salidas) / "campo"
+    reg = RegistroCampo(dir_campo / "registro.json")
+    asigs = reg.de_usuario(usuario)
+    if not asigs:
+        console.print(f"[red]{usuario} no tiene órdenes asignadas.[/] "
+                      f"Use [cyan]ptnt campo-asignar --usuario {usuario}[/].")
+        raise typer.Exit(code=2)
+
+    if red and Path(red).exists():
+        import duckdb
+        con = duckdb.connect(red, read_only=True)
+        capas = {}
+        for t in ("ptnt_puesto_transformacion", "ptnt_cliente", "ptnt_tramo",
+                  "ptnt_poste", "ptnt_luminaria", "ptnt_seccionador",
+                  "ptnt_capacitor", "ptnt_unidad_transformacion"):
+            try:
+                capas[t] = con.execute(f"SELECT * FROM {t}").df()
+            except Exception:
+                capas[t] = pd.DataFrame()
+        try:
+            conexiones = con.execute("SELECT * FROM ptnt_conexion").df()
+        except Exception:
+            conexiones = pd.DataFrame()
+        con.close()
+    else:
+        console.print("[yellow]Sin --red: se usa el escenario de demostración.[/]")
+        from ptnt.field.demo_red import red_de_demostracion
+        capas, conexiones = red_de_demostracion(asigs)
+
+    destino = dir_campo / "paquetes" / f"{usuario}.gpkg"
+    res = construir_paquete(
+        destino, usuario=usuario, asignaciones=asigs, red=capas,
+        conexiones=conexiones, teselas=teselas, margen_m=margen,
+        version_red=cfg.proyecto.version_config,
+    )
+
+    tabla = Table(title=f"Paquete de campo — {usuario}")
+    tabla.add_column("Concepto"); tabla.add_column("Valor", justify="right")
+    for k, v in res.resumen().items():
+        tabla.add_row(k.replace("_", " ").capitalize(), f"{v:,}"
+                      if isinstance(v, (int, float)) else str(v))
+    console.print(tabla)
+    for a in res.advertencias:
+        console.print(f"[yellow]⚠ {a}[/]")
+    console.print(f"[green]✓[/] {destino}")
+    console.print("  El técnico lo descarga desde la app "
+                  "([cyan]ptnt campo-servir[/] debe estar corriendo).")
+
 if __name__ == "__main__":  # pragma: no cover
     app()

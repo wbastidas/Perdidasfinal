@@ -49,8 +49,15 @@ datos de la red (esquema **Puesto → Unidad** homologado CNEL EP):
     dejar que se lea como el total.
 11. **Guarda el histórico** del balance por período y entidad, para ver si un
     plan de reducción de pérdidas está funcionando.
-12. **Publica los resultados en dos interfaces web**: un tablero de análisis para
-    escritorio (Streamlit, 8 pestañas) y un visor de solo lectura (FastAPI).
+12. **Lleva el trabajo al campo**: asigna órdenes a técnicos, arma un
+    **GeoPackage** con la red del área y cartografía offline, y una aplicación
+    **Android** permite crear, modificar, mover y eliminar elementos **sin
+    señal**, manteniendo el snap topológico —si se mueve un cliente se mueve su
+    acometida— y capturando fotos con ubicación y hora. Los cambios vuelven,
+    **se revisan** y los aceptados disparan el recálculo del balance y del
+    ranking.
+13. **Publica los resultados en dos interfaces web**: un tablero de análisis para
+    escritorio (Streamlit, 9 pestañas) y un visor de solo lectura (FastAPI).
 
 > **[Especificación completa](docs/ESPECIFICACION_COMPLETA.md)** — requerimientos,
 > campos y arquitectura de información para replicar el sistema.
@@ -60,6 +67,7 @@ datos de la red (esquema **Puesto → Unidad** homologado CNEL EP):
 > **[Guía de operación paso a paso](docs/GUIA_OPERACION.md)** ·
 > [Segmentación de clientes](docs/SEGMENTACION.md) ·
 > **[Prueba a escala — 20 000 clientes](docs/PRUEBA_COSTA_20K.md)** ·
+> **[Aplicación móvil de campo](docs/APLICACION_MOVIL.md)** ·
 > [Focalización de levantamientos](docs/FOCALIZACION.md) ·
 > [Diagnóstico y validación](docs/DIAGNOSTICO.md) ·
 > [Proceso](docs/PROCESO.md) · [Seguridad](docs/SEGURIDAD.md) ·
@@ -137,6 +145,11 @@ ptnt servir-visor       # visor de solo lectura  -> http://127.0.0.1:8080
 | `ptnt registrar-carga` | **Carga parcial**: declara qué insumo se cargó de qué alimentadores; reporta cobertura y pendientes |
 | `ptnt consolidar` | **Consolidado por unidad de negocio y subestación** + instantánea al histórico |
 | `ptnt crear-usuario` | Alta de usuario para las interfaces (solo hash) |
+| `ptnt campo-usuario` | **Crea un usuario de la aplicación móvil** |
+| `ptnt campo-asignar` | **Asigna órdenes de levantamiento a un técnico** |
+| `ptnt campo-paquete` | **Genera el GeoPackage descargable** con la red del área y la cartografía offline |
+| `ptnt campo-servir` | **API de sincronización** para la aplicación móvil |
+| `ptnt campo-revisar` | **Revisa los cambios de campo** y determina qué recalcular |
 
 ## Instalación por capas (extras)
 
@@ -172,6 +185,7 @@ src/ptnt/
 ├── segment/      # clasificación por tarifa/tensión/estrato + grupo par jerárquico
 ├── org/          # Unidad de Negocio -> Subestación -> Alimentador
 ├── ingest/       # carga parcial: alcance declarado y cobertura
+├── field/        # trabajo de campo: GeoPackage, órdenes, edición móvil, sync
 ├── report/       # informes HTML autocontenidos + gráficos SVG + PDF (Chromium)
 ├── ntl/
 │   ├── signals.py             # señales S1–S9 de hurto
@@ -210,7 +224,7 @@ pytest -m security      # auth, secretos, visor
 pytest --cov=ptnt       # cobertura
 ```
 
-**290 pruebas** en verde. Detalle de qué cubre cada archivo y los resultados de la
+**337 pruebas** en verde. Detalle de qué cubre cada archivo y los resultados de la
 demostración extremo a extremo en [`docs/PRUEBAS.md`](docs/PRUEBAS.md).
 
 ## Alcance de esta entrega
