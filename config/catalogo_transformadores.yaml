@@ -1,0 +1,26 @@
+# =============================================================================
+# Catálogo de transformadores — P0 (vacío), Pk (carga nominal) y %Z por kVA.
+# El modelo NO contiene P0/Pk/%Z por unidad; se obtienen de aquí por
+# kVA/fases/clase, y el resultado lleva origen_valor = CATALOGO. Es el mayor
+# origen de incertidumbre en las pérdidas de transformación.
+#
+# p0_kw = pérdida en vacío (constante, NO se afecta por el factor de pérdidas).
+# pk_kw = pérdida con carga nominal.
+# =============================================================================
+transformadores:
+  # Monofásicos (distribución)
+  - {kva: 5,   fases: 1, clase: "BT", p0_kw: 0.030, pk_kw: 0.090, z_pct: 2.5}
+  - {kva: 10,  fases: 1, clase: "BT", p0_kw: 0.045, pk_kw: 0.150, z_pct: 2.6}
+  - {kva: 15,  fases: 1, clase: "BT", p0_kw: 0.060, pk_kw: 0.210, z_pct: 2.7}
+  - {kva: 25,  fases: 1, clase: "BT", p0_kw: 0.090, pk_kw: 0.320, z_pct: 2.8}
+  - {kva: 37.5, fases: 1, clase: "BT", p0_kw: 0.120, pk_kw: 0.450, z_pct: 2.9}
+  - {kva: 50,  fases: 1, clase: "BT", p0_kw: 0.150, pk_kw: 0.580, z_pct: 3.0}
+  # Trifásicos (distribución)
+  - {kva: 30,  fases: 3, clase: "BT", p0_kw: 0.130, pk_kw: 0.500, z_pct: 3.5}
+  - {kva: 45,  fases: 3, clase: "BT", p0_kw: 0.180, pk_kw: 0.700, z_pct: 3.8}
+  - {kva: 75,  fases: 3, clase: "BT", p0_kw: 0.260, pk_kw: 1.100, z_pct: 4.0}
+  - {kva: 112.5, fases: 3, clase: "BT", p0_kw: 0.350, pk_kw: 1.550, z_pct: 4.5}
+  - {kva: 150, fases: 3, clase: "BT", p0_kw: 0.440, pk_kw: 1.950, z_pct: 5.0}
+  - {kva: 225, fases: 3, clase: "BT", p0_kw: 0.600, pk_kw: 2.700, z_pct: 5.5}
+  - {kva: 300, fases: 3, clase: "BT", p0_kw: 0.750, pk_kw: 3.400, z_pct: 6.0}
+  - {kva: 500, fases: 3, clase: "BT", p0_kw: 1.100, pk_kw: 5.200, z_pct: 6.0}

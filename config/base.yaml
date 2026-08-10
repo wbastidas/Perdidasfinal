@@ -1,0 +1,413 @@
+# =============================================================================
+# PTNT-BAL — Configuración base
+# Ningún valor de este archivo debe estar escrito en el código fuente.
+# Los parámetros sin valor por defecto son OBLIGATORIOS: si faltan, el arranque
+# falla con error explícito (nombre del parámetro + ruta en el YAML).
+# =============================================================================
+
+proyecto:
+  nombre: "PTNT-BAL"
+  version_config: "1.0.0"
+  unidad_negocio: "GYE"                 # OBLIGATORIO
+  codigo_empresa: "CNELGYE"
+  zona_horaria: "America/Guayaquil"
+
+rutas:
+  duckdb: "data/ptnt.duckdb"
+  salidas: "outputs"
+  bronze: "data/bronze"
+  silver: "data/silver"
+  gold: "data/gold"
+
+# -----------------------------------------------------------------------------
+# Bases de origen (multi-origen). Las credenciales NO van aquí: se referencian
+# por variable de entorno (usuario_env / password_env). Ver docs/SEGURIDAD.md.
+# -----------------------------------------------------------------------------
+fuentes:
+  - nombre: "comercial_csv"
+    tipo: "csv"
+    ruta: "data/entrada/consumos_36m.csv"
+
+  - nombre: "comercial_sqlserver"
+    tipo: "sqlserver"
+    host: "srv-comercial.cnel.local"
+    puerto: 1433
+    base_datos: "CIS"
+    esquema: "dbo"
+    driver: "ODBC Driver 18 for SQL Server"
+    usuario_env: "PTNT_SRC_COMERCIAL_USER"
+    password_env: "PTNT_SRC_COMERCIAL_PASS"
+    requiere_ssl: true
+
+  - nombre: "sig_postgres"
+    tipo: "postgres"
+    host: "srv-sig.cnel.local"
+    puerto: 5432
+    base_datos: "sig_gye"
+    esquema: "public"
+    usuario_env: "PTNT_SRC_SIG_USER"
+    password_env: "PTNT_SRC_SIG_PASS"
+    requiere_ssl: true
+
+  # File Geodatabase de ArcGIS (red geométrica, ST_Geometry, EPSG:32717)
+  - nombre: "sig_fgdb"
+    tipo: "fgdb"
+    ruta: "/datos/GYE.gdb"
+
+  # Oracle 11gR2 + ArcSDE (geometrías ST_Geometry). Se envuelven con SDE.ST_AsBinary.
+  - nombre: "sig_oracle_sde"
+    tipo: "oracle_arcsde"
+    host: "srv-sde.cnel.local"
+    puerto: 1521
+    base_datos: "ORCL"           # SID / service name
+    esquema: "SDE"
+    usuario_env: "PTNT_SRC_SDE_USER"
+    password_env: "PTNT_SRC_SDE_PASS"
+    requiere_ssl: false
+    st_geometry_cols:
+      TRAMODISTRIBUCIONAEREO: "SHAPE"
+      PUESTOTRANSFDISTRIBUCION: "SHAPE"
+      PUNTOCARGA: "SHAPE"
+
+  - nombre: "resultados_local"
+    tipo: "duckdb"
+    ruta: "data/ptnt.duckdb"
+
+# -----------------------------------------------------------------------------
+# Migración de datos: de qué fuente/tablas se construye el modelo canónico de red.
+# Las tablas/columnas son configurables para acomodar distintas bases de origen.
+# -----------------------------------------------------------------------------
+migracion:
+  fuente: "resultados_local"          # nombre de una fuente definida en 'fuentes'
+  field_map: "config/field_map.yaml"
+  tabla_segmentos: "silver.segments"
+  tabla_puestos: "silver.transformer_sites"
+  tabla_clientes: "silver.customer_nodes"
+  tabla_luminarias: "silver.streetlights"
+  tolerancia_longitud_pct: 30.0
+
+# -----------------------------------------------------------------------------
+# Ingesta comercial (§6.4). El punto significa cosas distintas por columna.
+# -----------------------------------------------------------------------------
+comercial:
+  separador: ";"
+  encoding: "latin-1"
+  parseo_columnas:
+    kwh:
+      separador_miles: "."
+      separador_decimal: ","
+    coordenadas:
+      separador_decimal: "."
+  orden_meses: "antiguo_primero"        # antiguo_primero | reciente_primero
+  verificar_orientacion: true
+  mes_final: "2026-05-01"               # OBLIGATORIO — mes de KWH_36
+  columnas:
+    division: "DIVISION"
+    cuenta_contrato: "CUENTACONTRATO"
+    nombre: "NOMBRE"
+    tarifa: "DESTARI"
+    x: "ZZUTM_X"
+    y: "ZZUTM_Y"
+    prefijo_kwh: "KWH_"
+    grupo_lectura: "CLIRLSCOD"          # grupo de ruta de lectura (grupo par)
+    ultimo_consumo_mes: "CLIULTCONM"
+  rangos_plausibles_kwh_mes:
+    "BT Residencial": {min: 0, max: 5000}
+    "BT Comercial":   {min: 0, max: 30000}
+    "BT Industrial":  {min: 0, max: 200000}
+    "MT Industrial":  {min: 0, max: 5000000}
+
+# -----------------------------------------------------------------------------
+# Mecanismo de promedio multi-mes. El consumo es de varios meses; para el
+# cálculo de demanda NO se usa el último mes aislado (error del SIG), sino un
+# promedio robusto de la ventana configurada.
+# -----------------------------------------------------------------------------
+promedio:
+  metodo: "media_recortada"    # media | media_recortada | mediana | media_ponderada | estacional
+  ventana_meses: 12
+  recorte_pct: 10.0
+  half_life_meses: 6.0
+  excluir_ceros_suspendidos: true
+  excluir_estimadas: false
+  min_meses_validos: 3
+
+# -----------------------------------------------------------------------------
+# Modelado de carga (§6)
+# -----------------------------------------------------------------------------
+carga:
+  metodo_demanda_maxima: "VELANDER"
+  dias_periodo_por_defecto: 30
+  prorrateo_calendario: true
+  coincidencia_minima: 0.15
+  calibrar_contra_cabecera: true
+  voltaje_ln: 127.0
+  voltaje_ll: 220.0
+  clases:
+    "BT Residencial":
+      a: 0.0002
+      b: 0.0300
+      A: 0.20
+      B: 0.80
+      cos_phi: 0.92
+      factor_carga: 0.42
+      k_perdidas: 0.30
+      es_residencial: true
+    "BT Comercial":
+      a: 0.00025
+      b: 0.0350
+      A: 0.30
+      B: 0.70
+      cos_phi: 0.90
+      factor_carga: 0.50
+      k_perdidas: 0.25
+      es_residencial: false
+    "BT Industrial":
+      a: 0.00030
+      b: 0.0400
+      A: 0.50
+      B: 0.50
+      cos_phi: 0.88
+      factor_carga: 0.65
+      k_perdidas: 0.18
+      es_residencial: false
+    "MT Industrial":
+      a: 0.00035
+      b: 0.0450
+      A: 0.70
+      B: 0.30
+      cos_phi: 0.92
+      factor_carga: 0.75
+      k_perdidas: 0.15
+      es_residencial: false
+
+# -----------------------------------------------------------------------------
+# Señales de PNT / hurto (§11.3)
+# -----------------------------------------------------------------------------
+senales:
+  s1_caida_min_pct: 40.0
+  s1_meses_min_caida: 3
+  s1_tolerancia_recuperacion_pct: 15.0
+  s3_cambio_min_pct: 30.0
+  s4_meses_min_cero: 3
+  s5_percentil: 5.0
+  s5_min_pares: 5
+  s7_cv_max: 0.05
+  s8_min_unidades: 3
+  s8_cv_min: 0.60
+  s9_deficit_min: 0.35                  # déficit contra la base propia del cliente
+  contaminacion: 0.05
+  usar_no_supervisado: true
+  campo_grupo_par: "grupo_lectura"      # CLIRLSCOD (respaldo sin segmentación)
+
+# -----------------------------------------------------------------------------
+# Segmentación de clientes (§11.3)
+#
+# Un taller, un supermercado y un departamento no se parecen en nada: comparar a
+# todos contra la misma referencia produce falsos positivos en residenciales
+# pequeños y falsos NEGATIVOS en comerciales e industriales, que es donde está la
+# energía. El grupo par se arma por clase × nivel de tensión × estrato × ruta
+# comercial (CLIRLSCOD), degradando a un nivel más general cuando el grupo fino
+# no reúne el mínimo de miembros.
+# -----------------------------------------------------------------------------
+segmentacion:
+  habilitada: true
+  columna_tarifa: "tariff_description"   # DESTARI / TIPOTARIFA de ATRIBUTOSCONSUMIDOR
+  percentil_consumo_base: 75.0           # nivel habitual del cliente (no la media)
+  min_pares: 8                           # mínimo para que el grupo par sea utilizable
+  # Bloques de consumo residencial (kWh/mes). El corte de 130 corresponde al
+  # límite de la Tarifa Dignidad en Costa/Oriente/Insular.
+  # AJUSTAR contra el histograma real del padrón antes de producción.
+  cortes_residencial_kwh: [50, 100, 130, 200, 300, 500, 1000]
+  cortes_no_residencial_kwh: [200, 1000, 5000, 20000, 100000]
+  umbral_gran_cliente_kwh_mes: 5000.0    # revisión individual, no por ranking relativo
+
+# -----------------------------------------------------------------------------
+# Jerarquía organizacional: Unidad de Negocio -> Subestación -> Alimentador
+#
+# Sin este catálogo el sistema solo razona desde el alimentador hacia abajo, que
+# basta para el análisis técnico pero no para la gestión: el presupuesto se
+# decide por unidad de negocio y la operación por subestación.
+# Formato del CSV: feeder_code, subestacion, unidad_negocio[, nombre, tension_kv]
+# -----------------------------------------------------------------------------
+organizacion:
+  catalogo: null                    # p.ej. "config/jerarquia.csv"
+  inferir_si_falta: true            # deducir la UN del prefijo del código
+  separador_codigo: "-"             # "GYE-01" -> UN "GYE"
+
+# -----------------------------------------------------------------------------
+# Carga parcial de información (D06)
+#
+# La información no llega toda junta. Se declara el alcance de cada carga para
+# que un consolidado incompleto se marque PARCIAL en vez de leerse como total.
+# -----------------------------------------------------------------------------
+carga_parcial:
+  ruta_alcance: "outputs/alcance_carga.json"
+  universo_alimentadores: []        # vacío = el universo es lo que se cargó
+  cobertura_minima_pct: 99.9        # por debajo, el consolidado se marca PARCIAL
+
+# -----------------------------------------------------------------------------
+# Histórico de balance (tablero de evolución)
+# -----------------------------------------------------------------------------
+historico:
+  habilitado: true
+  ruta: "outputs/historico_balance.parquet"
+  min_periodos_tendencia: 3
+
+# -----------------------------------------------------------------------------
+# Catálogos de red
+# -----------------------------------------------------------------------------
+catalogos:
+  conductores: "config/catalogo_conductores.yaml"
+  transformadores: "config/catalogo_transformadores.yaml"
+
+# -----------------------------------------------------------------------------
+# Pérdidas técnicas (§8)
+# -----------------------------------------------------------------------------
+perdidas:
+  k_por_tipo_alimentador:
+    "U": 0.30      # Urbano
+    "R": 0.20      # Rural
+  k_por_defecto: 0.25
+  temperatura_operacion_c: 50.0
+  temperatura_referencia_c: 20.0
+  alpha_aluminio: 0.00403
+  alpha_cobre: 0.00393
+  incluir_neutro: true
+  factor_desbalance_cobre: 1.02
+  aplicar_factor_perdidas_a_vacio: false   # DEBE ser false (§8.3.1)
+  watts_medidor:
+    "Electromecánico": 1.8
+    "Electrónico": 0.8
+    "Inteligente": 1.0
+    "_default": 1.0
+
+# -----------------------------------------------------------------------------
+# Alumbrado público (§9)
+# -----------------------------------------------------------------------------
+alumbrado:
+  dias_mes_por_defecto: 30
+  horas_min: 10.0
+  horas_max: 13.0
+  perdidas_auxiliares_w:
+    "LED": 4
+    "Sodio": 25
+    "Mercurio": 30
+    "Metal Halide": 28
+    "Inducción": 8
+    "_default": 20
+  excluir_si_bajo_medicion: true           # DEBE ser true (evita doble conteo)
+  sensibilidad_horas_pct: 20.0
+
+# -----------------------------------------------------------------------------
+# Balance energético (§10)
+# -----------------------------------------------------------------------------
+balance:
+  tolerancia_cierre_pct: 0.5
+  consumos_propios_pct_defecto: 0.1
+  ens_por_defecto_kwh: 0.0
+  controles:
+    c02_pnt_maxima_pct: 60.0
+    c04_perdidas_tecnicas_max_pct: 20.0
+    c05_cobertura_clientes_pct: 10.0
+    c06_cobertura_energia_min_pct: 70.0
+
+# -----------------------------------------------------------------------------
+# Cargabilidad de transformadores (§11.7)
+# -----------------------------------------------------------------------------
+cargabilidad:
+  sobrecargado_critico: 1.20
+  sobrecargado: 1.00
+  alta_carga: 0.80
+  adecuado_min: 0.30
+  subutilizado_min: 0.15
+  desbalance_umbral_pct: 10.0
+
+# -----------------------------------------------------------------------------
+# Flujo de potencia (§8.7)
+# -----------------------------------------------------------------------------
+flujo:
+  tolerancia_convergencia: 1.0e-6
+  max_iteraciones: 100
+
+# -----------------------------------------------------------------------------
+# Recursos del equipo
+# -----------------------------------------------------------------------------
+# Todo se detecta solo. Estos parámetros existen para el caso en que el servidor
+# COMPARTE con otro servicio y hay que dejarle sitio.
+#
+# La restricción que manda casi siempre es la MEMORIA, no los núcleos: un
+# alimentador urbano ocupa cientos de MB mientras se resuelve el flujo, y
+# dieciséis a la vez en un equipo de 16 GB no dan dieciséis veces la velocidad,
+# dan swap — y con swap el lote tarda más que en secuencial.
+#
+# Ver cuánto cabe en este equipo:  ptnt recursos
+# Medir el coste real:             ptnt recursos --medir
+recursos:
+  # Vacío = todos los núcleos utilizables. Se respetan los límites del
+  # contenedor: cpuset, cuota CFS (`--cpus`) y tope de memoria (`--memory`).
+  cpus: null
+  # Tope absoluto por encima de lo que diga el cálculo. 0 = sin tope.
+  max_trabajadores: 0
+
+  # Lo que NUNCA se toca: sistema operativo, base de datos y la API móvil, que
+  # debe seguir respondiendo mientras se recalcula un lote.
+  ram_reservada_mb: 2048
+  fraccion_ram_utilizable: 0.75
+
+  # Memoria pico por alimentador. Se MIDE con `ptnt recursos --medir`, no se
+  # adivina: ponerlo bajo hace que el sistema lance de más y acabe paginando.
+  coste_mb_por_tarea: 512
+
+  max_en_cola: 0          # 0 = sin tope; se procesa todo, por lotes
+  espera_maxima_s: 30.0   # cuánto espera una tarea a que se libere memoria
+
+  # Cuántas tareas se miran a la vez para elegir la más prioritaria. 0 =
+  # automático (1024), que cubre de sobra cualquier lote real: la cola guarda
+  # códigos y rutas, no modelos de red.
+  ventana_prioridad: 0
+
+  # Un corte de red en una de once bases no puede costar la unidad de negocio
+  # entera. Solo se reintenta lo pasajero (sesión caída, base ocupada, timeout);
+  # un fallo de datos no se reintenta, gastaría el lote dos veces para fallar
+  # igual.
+  reintentos_lectura: 2
+  espera_reintento_s: 2.0
+
+  # --- concurrencia de la API móvil ---
+  # Lo que no cabe espera en cola; si la cola se llena, 503 + Retry-After.
+  descargas_simultaneas: 4
+  subidas_simultaneas: 2  # menos: abrir y recorrer un GeoPackage cuesta más
+  max_en_cola_api: 32
+
+  # --- lectura de bases de origen ---
+  # Once unidades de negocio se leen en paralelo. `max_por_fuente` evita agotar
+  # las sesiones de una misma instancia: pasarse no acelera, hace que el DBA
+  # corte el acceso.
+  lecturas_simultaneas: 6
+  max_por_fuente: 2
+
+# -----------------------------------------------------------------------------
+# Seguridad
+# -----------------------------------------------------------------------------
+seguridad:
+  autenticacion_habilitada: true
+  jwt_secret_env: "PTNT_JWT_SECRET"
+  jwt_ttl_min: 60
+  ruta_usuarios: "config/usuarios.json"
+  redes_permitidas: []                  # p.ej. ["10.0.0.0/8", "192.168.0.0/16"]
+  max_intentos_login: 5
+
+# -----------------------------------------------------------------------------
+# Interfaces web
+# -----------------------------------------------------------------------------
+dashboard:
+  puerto: 8501
+  host: "127.0.0.1"
+  cache_ttl_s: 600
+  idioma: "es"
+  formato_numero: "es_EC"
+
+visor:
+  puerto: 8080
+  host: "127.0.0.1"
+  titulo: "PTNT-BAL — Resultados"

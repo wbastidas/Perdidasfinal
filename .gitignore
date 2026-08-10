@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+/build/
+/dist/
+.venv/
+venv/
+
+# Datos y salidas (no versionar volúmenes ni resultados)
+# Anclado a la raíz: sin la barra inicial, `data/` también ignoraba el paquete
+# `data` del código fuente Android.
+/data/
+/outputs/
+*.duckdb
+*.duckdb.wal
+*.parquet
+
+# Configuración sensible / usuarios
+config/usuarios.json
+
+# Pruebas / cobertura
+.pytest_cache/
+.coverage
+htmlcov/
+.hypothesis/
+
+# Editores / SO
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Android / Gradle
+mobile/**/build/
+mobile/.gradle/
+mobile/local.properties
+*.apk
+*.aab
+# Claves de firma: un APK firmado con la clave de la distribuidora se instala
+# como si fuera oficial. Nunca al repositorio.
+*.keystore
+*.jks

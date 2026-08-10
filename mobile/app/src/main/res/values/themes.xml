@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Tema base del sistema. La interfaz real la pinta Compose (ui/Tema.kt); esto
+      solo cubre el arranque, antes de que Compose tome la pantalla. Sin un tema
+      declarado aquí, el primer frame es blanco puro: un destello a pleno sol que
+      obliga al técnico a apartar la vista.
+    -->
+    <style name="Theme.PtntCampo" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/fondo</item>
+        <item name="android:statusBarColor">@color/primario_oscuro</item>
+    </style>
+</resources>

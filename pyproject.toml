@@ -1,0 +1,76 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ptnt-bal"
+version = "1.0.0"
+description = "PTNT-BAL — Plataforma de Pérdidas Técnicas, No Técnicas y Balance Energético (análisis de consumo y detección de hurto)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "CNEL EP / PTNT-BAL" }]
+
+# El núcleo de dominio (parseo, promedios, demanda, señales de hurto) depende
+# únicamente de la librería estándar + numpy/pandas para poder ejecutarse en
+# un servidor mínimo. El resto son extras opcionales por capa.
+dependencies = [
+    "pydantic>=2.5",
+    "pydantic-settings>=2.1",
+    "PyYAML>=6.0",
+    "numpy>=1.26",
+    "pandas>=2.1",
+    "typer>=0.9",
+    "rich>=13.7",
+    "loguru>=0.7",
+]
+
+[project.optional-dependencies]
+# Motor analítico local
+store = ["duckdb>=0.10"]
+# Conectores a bases de origen (SQL Server, PostgreSQL, Oracle, MySQL)
+sources = [
+    "SQLAlchemy>=2.0",
+    "pyodbc>=5.0",        # SQL Server
+    "psycopg2-binary>=2.9", # PostgreSQL
+    "oracledb>=2.0",      # Oracle
+    "PyMySQL>=1.1",       # MySQL / MariaDB
+]
+# Detección de anomalías no supervisada
+ml = ["scikit-learn>=1.4", "ruptures>=1.1"]
+# Validación cruzada del flujo con OpenDSS
+opendss = ["OpenDSSDirect.py>=0.8"]
+# Interfaz web para escritorio (analista)
+dashboard = ["streamlit>=1.30", "plotly>=5.18", "pydeck>=0.8"]
+# Interfaz web de solo lectura (consulta por terceros)
+webviewer = ["fastapi>=0.109", "uvicorn>=0.27", "jinja2>=3.1"]
+# Seguridad
+security = ["passlib[bcrypt]>=1.7", "python-jose[cryptography]>=3.3"]
+# Pruebas
+test = ["pytest>=8.0", "pytest-cov>=4.1", "hypothesis>=6.98"]
+
+all = [
+    "ptnt-bal[store,sources,ml,opendss,dashboard,webviewer,security,test]",
+]
+
+[project.scripts]
+ptnt = "ptnt.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+ptnt = ["store/schema.sql", "config/*.yaml", "ref/catalogo_estructura.csv"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "unit: pruebas unitarias de fórmulas y lógica de dominio",
+    "integration: pruebas de integración de extremo a extremo",
+    "security: pruebas de seguridad",
+]
+addopts = "-ra"
+
+[tool.coverage.run]
+source = ["ptnt"]
+branch = true
