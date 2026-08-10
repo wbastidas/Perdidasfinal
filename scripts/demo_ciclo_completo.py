@@ -366,7 +366,7 @@ def main() -> int:  # noqa: C901 - es un recorrido lineal, se lee como tal
 
             for i, c in enumerate(clientes[:3]):
                 sim.editar_atributos("ptnt_cliente", str(c["guid"]), {
-                    "hallazgo": "MEDIDOR_MANIPULADO" if i == 0 else "NORMAL",
+                    "hallazgo": "MEDIDOR_MANIPULADO" if i == 0 else "SIN_NOVEDAD",
                     "inspeccionado": 1,
                     "lectura_medidor": 12345.0 + i,
                 }, motivo="Inspección en sitio")
@@ -562,7 +562,7 @@ def main() -> int:  # noqa: C901 - es un recorrido lineal, se lee como tal
             sim.abrir_orden(ot)
             for c in sim.elementos("ptnt_cliente", limite=15)[9:11]:
                 sim.editar_atributos("ptnt_cliente", str(c["guid"]),
-                                     {"hallazgo": "NORMAL"},
+                                     {"hallazgo": "SIN_NOVEDAD"},
                                      motivo="Segunda jornada")
             sim.cerrar_orden(ot, "Recorrido completado en dos jornadas")
         despues = len(sim.elementos("ptnt_cambio"))

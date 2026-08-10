@@ -152,8 +152,17 @@ def construir_paquete(
 
     with GeoPackage(destino) as gp:
         # --- 2. Crear el esquema completo -----------------------------------
-        for capa in capas_red() + capas_trabajo() + capas_referencia():
+        todas = capas_red() + capas_trabajo() + capas_referencia()
+        for capa in todas:
             gp.crear_capa(capa)
+
+        # Dominios en la extensión estándar del formato: así QGIS y ArcGIS abren
+        # el paquete con los desplegables puestos sin saber nada de este
+        # proyecto. Y los subtipos —que ningún formato expresa— en tablas
+        # propias, dentro del mismo archivo: en campo no hay señal para ir a
+        # buscar las reglas a otro lado.
+        gp.escribir_dominios(todas)
+        gp.escribir_subtipos(todas)
 
         # --- 3. Recortar y cargar la red ------------------------------------
         guids_incluidos: set[str] = set()

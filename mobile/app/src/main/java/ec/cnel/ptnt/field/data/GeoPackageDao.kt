@@ -106,6 +106,44 @@ class GeoPackageDao(private val archivo: File) {
             arrayOf(guid)).firstOrNull()
 
     /**
+     * Busca por número de cuenta, código o nombre en las capas indicadas.
+     *
+     * El técnico llega a una casa con la cuenta escrita en la orden, no con una
+     * coordenada. Sin búsqueda tiene que reconocer el punto correcto entre
+     * cientos de puntos iguales en una manzana, y en la práctica abre el que
+     * está más cerca del dedo — que es como se inspecciona al vecino y se
+     * levanta un hallazgo contra quien no era.
+     *
+     * Se buscan solo las columnas de identificación y con `LIKE 'texto%'`: un
+     * `%texto%` sobre 30 000 filas sin índice hace que cada tecla tarde, y el
+     * técnico deja de usarlo.
+     */
+    fun buscar(texto: String, capas: List<String>, limite: Int = 30): List<Elemento> {
+        val patron = texto.trim()
+        if (patron.length < 2) return emptyList()
+
+        val out = mutableListOf<Elemento>()
+        for (capa in capas) {
+            val columnas = columnasDe(capa).filter { it in COLUMNAS_BUSQUEDA }
+            if (columnas.isEmpty()) continue
+            val where = columnas.joinToString(" OR ") { """"$it" LIKE ?""" }
+            val args = Array(columnas.size) { "$patron%" } + arrayOf(limite.toString())
+            out += consultar(
+                capa, """SELECT * FROM "$capa" WHERE $where LIMIT ?""", args)
+            if (out.size >= limite) break
+        }
+        return out.take(limite)
+    }
+
+    private fun columnasDe(capa: String): List<String> {
+        val out = mutableListOf<String>()
+        db.rawQuery("""PRAGMA table_info("$capa")""", null).use { c ->
+            while (c.moveToNext()) out += c.getString(1)
+        }
+        return out
+    }
+
+    /**
      * Elementos relacionados con uno dado: el panel "Relacionados" del formulario.
      *
      * Es lo que hace operativo el modelo Puesto→Unidad: parado sobre un puesto,
@@ -592,3 +630,15 @@ object GpkgGeometria {
         return bb.array()
     }
 }
+
+/**
+ * Columnas por las que se busca.
+ *
+ * Es una lista corta y no "todas las de texto" a propósito: buscar por
+ * observación u origen de edición devuelve decenas de coincidencias inútiles y
+ * entierra la que el técnico quería.
+ */
+private val COLUMNAS_BUSQUEDA = setOf(
+    "cuenta_contrato", "codigo", "medidor_serie", "nombre", "serie",
+    "ruta_lectura", "orden_trabajo"
+)

@@ -28,9 +28,10 @@ Cambiar algo aquí cambia el contrato, y por eso el esquema lleva versión.
 
 from __future__ import annotations
 
+from ptnt.field.domains import Dominio, Regla, Subtipo
 from ptnt.field.gpkg import Campo, Capa
 
-VERSION_ESQUEMA = "1.1.0"
+VERSION_ESQUEMA = "1.2.0"
 
 # --------------------------------------------------------------------------- #
 # Dominios (alimentan los desplegables del formulario móvil)
@@ -76,6 +77,344 @@ def _c(nombre: str, tipo: str = "TEXT", **kw) -> Campo:
 
 
 # --------------------------------------------------------------------------- #
+# Subtipos: al cambiarlos cambian los dominios, igual que en el SIG
+# --------------------------------------------------------------------------- #
+# Esto no es una comodidad de la interfaz. Un banco en delta abierto tiene dos
+# unidades y sus fases posibles son AB, BC o CA: ABC es físicamente imposible. Si
+# el formulario ofreciera las siete combinaciones, alguien elegiría ABC alguna
+# vez, y ese dato entra al modelo — el flujo reparte la carga entre tres fases
+# que no existen y el desbalance de esa zona deja de significar nada. El dominio
+# dependiente del subtipo es lo que hace que el dato imposible **no sea
+# capturable**.
+
+def _subtipos_puesto() -> list[Subtipo]:
+    """Configuración del banco: define cuántas unidades hay y qué fases caben."""
+
+    return [
+        Subtipo(
+            codigo="SIMPLE", etiqueta="Monofásico simple",
+            descripcion="Una unidad. Alimenta una fase.",
+            dominios={"fases": Dominio.codificado(
+                "dom_fases_simple", ["A", "B", "C"],
+                "Una sola unidad: una sola fase")},
+            defectos={"fases": "A", "n_unidades": 1},
+        ),
+        Subtipo(
+            codigo="DELTA_ABIERTO", etiqueta="Delta abierto (2 unidades)",
+            descripcion="Dos unidades en V. Da servicio trifásico con dos fases.",
+            dominios={"fases": Dominio.codificado(
+                "dom_fases_delta_abierto", ["AB", "BC", "CA"],
+                "Dos unidades: dos fases. ABC es imposible con dos unidades.")},
+            defectos={"fases": "AB", "n_unidades": 2},
+        ),
+        Subtipo(
+            codigo="BANCO_3", etiqueta="Banco trifásico (3 unidades)",
+            descripcion="Tres unidades, una por fase.",
+            dominios={"fases": Dominio.codificado(
+                "dom_fases_banco3", ["ABC"], "Tres unidades: las tres fases")},
+            defectos={"fases": "ABC", "n_unidades": 3},
+        ),
+        Subtipo(
+            codigo="DELTA_4H", etiqueta="Delta 4 hilos",
+            descripcion="Tres unidades con neutro corrido.",
+            dominios={"fases": Dominio.codificado(
+                "dom_fases_delta4h", ["ABC"], "Tres unidades: las tres fases")},
+            defectos={"fases": "ABC", "n_unidades": 3},
+        ),
+    ]
+
+
+def _subtipos_tramo() -> list[Subtipo]:
+    """Aéreo o subterráneo, media o baja: cambian la tensión y qué se pregunta.
+
+    **El conductor no se acota aquí.** Los códigos de conductor son los de
+    CATALOGOESTRUCTURA (``COO….``) y salen del catálogo del cliente, no de una
+    lista escrita en este archivo: inventar una obligaría a mantener dos
+    catálogos y el de campo se quedaría viejo el primer mes. Cuando el catálogo
+    está cargado, :func:`dominios_conductor_desde_catalogo` construye el dominio
+    real y se lo añade a estos subtipos.
+    """
+
+    tension_mt = Dominio.codificado(
+        "dom_tension_mt", [("13800", "13,8 kV"), ("22000", "22 kV"),
+                           ("6300", "6,3 kV")], "Tensiones de media tensión")
+    tension_bt = Dominio.codificado(
+        "dom_tension_bt", [("120", "120 V"), ("220", "220 V"),
+                           ("240", "240 V"), ("480", "480 V")],
+        "Tensiones de baja tensión")
+
+    return [
+        Subtipo(
+            codigo="AEREO_MT", etiqueta="Aéreo — media tensión",
+            dominios={"tension_v": tension_mt},
+            defectos={"tension_v": "13800", "es_baja_tension": 0, "n_fases": 3},
+            # Preguntar el ducto en una red aérea es pedir un dato que no existe,
+            # y alguien acabará inventándolo con tal de cerrar el formulario.
+            ocultos=("tipo_ducto", "profundidad_m"),
+        ),
+        Subtipo(
+            codigo="AEREO_BT", etiqueta="Aéreo — baja tensión",
+            dominios={"tension_v": tension_bt},
+            defectos={"tension_v": "220", "es_baja_tension": 1, "n_fases": 2},
+            ocultos=("tipo_ducto", "profundidad_m"),
+        ),
+        Subtipo(
+            codigo="SUBTERRANEO_MT", etiqueta="Subterráneo — media tensión",
+            dominios={"tension_v": tension_mt},
+            defectos={"tension_v": "13800", "es_baja_tension": 0, "n_fases": 3,
+                      "tipo_ducto": "PVC"},
+            obligatorios=("tipo_ducto",),
+        ),
+        Subtipo(
+            codigo="SUBTERRANEO_BT", etiqueta="Subterráneo — baja tensión",
+            dominios={"tension_v": tension_bt},
+            defectos={"tension_v": "220", "es_baja_tension": 1, "n_fases": 2,
+                      "tipo_ducto": "PVC"},
+            obligatorios=("tipo_ducto",),
+        ),
+    ]
+
+
+def dominios_conductor_desde_catalogo(catalogo, capa: Capa) -> Capa:
+    """Acota ``codigo_estructura`` con los conductores del catálogo real.
+
+    Se aplica sobre la capa ya construida en vez de escribirse en el subtipo,
+    porque el catálogo es un dato del cliente y no del código: en un despliegue
+    sin CATALOGOESTRUCTURA cargado el campo queda libre —que es correcto— y en
+    uno con catálogo queda acotado a lo que la empresa realmente instala.
+
+    La partición aéreo/subterráneo no se deduce del código, así que **no se
+    inventa**: se ofrece el catálogo completo de conductores, que ya es un salto
+    enorme frente a teclearlo a mano. Si el catálogo del cliente distingue los
+    dos mundos por descripción, este es el punto donde filtrarlo.
+    """
+
+    from ptnt.ref.structure_catalog import ElementCategory
+
+    conductores = [
+        (it.code, f"{it.code} — {it.description}" if it.description else it.code)
+        for it in catalogo.items_by_category(ElementCategory.CONDUCTOR)
+    ]
+    if not conductores:
+        return capa
+
+    dom = Dominio.codificado("dom_conductor_catalogo", conductores,
+                             "Conductores de CATALOGOESTRUCTURA")
+    for f in capa.campos:
+        if f.nombre == "codigo_estructura":
+            f.dominio = dom
+    return capa
+
+
+# Las tarifas son las **descripciones de DESTARI tal como llegan del sistema
+# comercial**, no códigos propios: el resto de la plataforma clasifica por ese
+# texto, y traducirlo aquí a un código inventado obligaría a mantener una tabla
+# de equivalencias que nadie actualizaría. `test_campo_subtipos` comprueba que
+# cada tarifa de cada subtipo clasifica en la clase que le corresponde, con el
+# mismo clasificador que usa el análisis: así el formulario no puede alejarse de
+# lo que el sistema entiende.
+DOM_TARIFA_RESIDENCIAL = [
+    "RESIDENCIAL BAJA TENSION",
+    "RESIDENCIAL TEMPORAL BAJA TENSION",
+    "TARIFA DIGNIDAD BAJA TENSION",
+]
+DOM_TARIFA_COMERCIAL = [
+    "COMERCIAL SIN DEMANDA BAJA TENSION",
+    "COMERCIAL CON DEMANDA BAJA TENSION",
+    "COMERCIAL CON DEMANDA MEDIA TENSION",
+]
+DOM_TARIFA_INDUSTRIAL = [
+    "INDUSTRIAL ARTESANAL BAJA TENSION",
+    "INDUSTRIAL CON DEMANDA BAJA TENSION",
+    "INDUSTRIAL CON DEMANDA MEDIA TENSION",
+    "INDUSTRIAL CON DEMANDA HORARIA MEDIA TENSION",
+]
+DOM_TARIFA_OFICIAL = [
+    "ENTIDADES OFICIALES BAJA TENSION",
+    "ENTIDADES OFICIALES MEDIA TENSION",
+]
+DOM_TARIFA_ASISTENCIA = [
+    "ASISTENCIA SOCIAL BAJA TENSION",
+    "BENEFICIO PUBLICO BAJA TENSION",
+    "ESCENARIOS DEPORTIVOS BAJA TENSION",
+    "CULTO RELIGIOSO BAJA TENSION",
+]
+DOM_TARIFA_BOMBEO = [
+    "BOMBEO DE AGUA BAJA TENSION",
+    "BOMBEO DE AGUA MEDIA TENSION",
+]
+DOM_TARIFA_ALUMBRADO = [
+    "ALUMBRADO PUBLICO NO MEDIDO",
+    "ALUMBRADO PUBLICO MEDIDO",
+]
+
+
+def _subtipos_cliente() -> list[Subtipo]:
+    """Clase de servicio: la tarifa que cabe depende de ella, no al revés."""
+
+    return [
+        Subtipo(
+            codigo="RESIDENCIAL", etiqueta="Residencial",
+            dominios={
+                "tarifa": Dominio.codificado(
+                    "dom_tarifa_residencial", DOM_TARIFA_RESIDENCIAL,
+                    "Tarifas residenciales (DESTARI)"),
+                "n_fases": Dominio.codificado("dom_fases_res", ["1", "2"],
+                                              "Servicio residencial: 1 o 2 fases"),
+            },
+            defectos={"n_fases": "2"},
+        ),
+        Subtipo(
+            codigo="COMERCIAL", etiqueta="Comercial",
+            dominios={
+                "tarifa": Dominio.codificado(
+                    "dom_tarifa_comercial", DOM_TARIFA_COMERCIAL,
+                    "Tarifas comerciales (DESTARI)"),
+                "n_fases": Dominio.codificado("dom_fases_com", ["1", "2", "3"]),
+            },
+        ),
+        Subtipo(
+            codigo="INDUSTRIAL", etiqueta="Industrial",
+            dominios={
+                "tarifa": Dominio.codificado(
+                    "dom_tarifa_industrial", DOM_TARIFA_INDUSTRIAL,
+                    "Tarifas industriales (DESTARI)"),
+                "n_fases": Dominio.codificado("dom_fases_ind", ["3"],
+                                              "El servicio industrial es trifásico"),
+                # Un industrial con medidor electromecánico no factura demanda:
+                # ofrecerlo es capturar una imposibilidad comercial.
+                "tipo_medidor": Dominio.codificado(
+                    "dom_medidor_industrial",
+                    ["ELECTRONICO", "INTELIGENTE"],
+                    "El industrial exige medida electrónica"),
+            },
+            defectos={"n_fases": "3", "tipo_medidor": "INTELIGENTE"},
+        ),
+        Subtipo(
+            codigo="OFICIAL", etiqueta="Oficial / entidad pública",
+            dominios={"tarifa": Dominio.codificado(
+                "dom_tarifa_oficial", DOM_TARIFA_OFICIAL,
+                "Tarifas de entidades oficiales")},
+        ),
+        # Las tres que siguen existen porque el análisis las distingue: meterlas
+        # dentro de «oficial» haría que el clasificador las separara después y el
+        # subtipo capturado en campo dejara de coincidir con la clase con la que
+        # el cliente se compara.
+        Subtipo(
+            codigo="ASISTENCIA_SOCIAL", etiqueta="Asistencia social / beneficio público",
+            dominios={"tarifa": Dominio.codificado(
+                "dom_tarifa_asistencia", DOM_TARIFA_ASISTENCIA,
+                "Asistencia social, culto y escenarios deportivos")},
+        ),
+        Subtipo(
+            codigo="BOMBEO_AGUA", etiqueta="Bombeo de agua",
+            dominios={"tarifa": Dominio.codificado(
+                "dom_tarifa_bombeo", DOM_TARIFA_BOMBEO,
+                "Bombeo de agua potable")},
+        ),
+        Subtipo(
+            codigo="ALUMBRADO_PUBLICO", etiqueta="Alumbrado público",
+            dominios={"tarifa": Dominio.codificado(
+                "dom_tarifa_alumbrado", DOM_TARIFA_ALUMBRADO,
+                "Alumbrado público medido y no medido")},
+        ),
+    ]
+
+
+def _subtipos_luminaria() -> list[Subtipo]:
+    """Luminaria, semáforo o cámara: cambian la potencia posible y si se mide."""
+
+    return [
+        Subtipo(
+            codigo="LUMINARIA", etiqueta="Luminaria de alumbrado",
+            dominios={"potencia_w": Dominio.rango("dom_potencia_luminaria",
+                                                  30, 400, "Vatios de luminaria")},
+            defectos={"potencia_w": 150, "medida": 0},
+        ),
+        Subtipo(
+            codigo="SEMAFORO", etiqueta="Semáforo",
+            dominios={"potencia_w": Dominio.rango("dom_potencia_semaforo",
+                                                  20, 300, "Vatios de semáforo")},
+            # Por regulación va como alumbrado NO medido. Dejarlo por defecto
+            # evita que la energía del semáforo se cuente dos veces.
+            defectos={"potencia_w": 60, "medida": 0},
+            ocultos=("perdida_balastro_w",),
+        ),
+        Subtipo(
+            codigo="CAMARA", etiqueta="Cámara de vigilancia",
+            dominios={"potencia_w": Dominio.rango("dom_potencia_camara",
+                                                  5, 100, "Vatios de cámara")},
+            defectos={"potencia_w": 25, "medida": 0},
+            ocultos=("perdida_balastro_w",),
+        ),
+    ]
+
+
+def _subtipos_poste() -> list[Subtipo]:
+    """Material del soporte: el rango de altura razonable no es el mismo.
+
+    Se usan **rangos y no listas de alturas normalizadas**: la norma de cada
+    empresa fija sus propios valores, y una lista escrita aquí bloquearía un
+    poste legítimo el primer día. El rango atrapa lo que sí es siempre un error
+    —un poste de 40 m, un 2 m tecleado sin el 1— sin inventar un catálogo.
+    """
+
+    return [
+        Subtipo(
+            codigo="HORMIGON", etiqueta="Hormigón armado",
+            dominios={"altura_m": Dominio.rango(
+                "dom_altura_hormigon", 6, 18, "Poste de hormigón armado")},
+        ),
+        Subtipo(
+            codigo="MADERA", etiqueta="Madera tratada",
+            dominios={"altura_m": Dominio.rango(
+                "dom_altura_madera", 6, 12,
+                "La madera no se fabrica en las alturas del hormigón")},
+        ),
+        Subtipo(
+            codigo="METALICO", etiqueta="Metálico",
+            dominios={"altura_m": Dominio.rango("dom_altura_metalico", 6, 40,
+                                                "Torre o poste metálico")},
+        ),
+        Subtipo(
+            codigo="FIBRA", etiqueta="Fibra de vidrio",
+            dominios={"altura_m": Dominio.rango("dom_altura_fibra", 6, 14)},
+        ),
+    ]
+
+
+def _reglas_cliente() -> list[Regla]:
+    """Contingencias que no dependen del subtipo sino de otro campo.
+
+    El subtipo cubre lo habitual, pero no todo: el calibre de una acometida
+    depende de si es aérea o subterránea, y eso no es la clase de servicio del
+    cliente. Sin este mecanismo, esos casos vuelven a la lista completa y el
+    formulario ofrece combinaciones que no se pueden instalar.
+    """
+
+    return [
+        Regla(
+            campo_condicion="tipo_acometida", valor_condicion="AEREA",
+            campo_afectado="calibre_acometida",
+            dominio=Dominio.codificado(
+                "dom_acometida_aerea",
+                [("DUPLEX-6", "Dúplex 6 AWG"), ("DUPLEX-4", "Dúplex 4 AWG"),
+                 ("TRIPLEX-2", "Tríplex 2 AWG"), ("TRIPLEX-1/0", "Tríplex 1/0 AWG")],
+                "Cables preensamblados de acometida aérea"),
+        ),
+        Regla(
+            campo_condicion="tipo_acometida", valor_condicion="SUBTERRANEA",
+            campo_afectado="calibre_acometida",
+            dominio=Dominio.codificado(
+                "dom_acometida_subterranea",
+                [("TTU-6", "TTU 6 AWG"), ("TTU-4", "TTU 4 AWG"),
+                 ("TTU-2", "TTU 2 AWG")],
+                "Cables aislados de acometida subterránea"),
+        ),
+    ]
+
+
+# --------------------------------------------------------------------------- #
 # Campos comunes a todo elemento de red
 # --------------------------------------------------------------------------- #
 def _campos_base() -> list[Campo]:
@@ -106,6 +445,10 @@ def capas_red() -> list[Capa]:
             nombre="ptnt_puesto_transformacion",
             tipo_geometria="POINT",
             descripcion="Puesto de transformación (PUESTOTRANSFDISTRIBUCION)",
+            # La configuración del banco manda sobre las fases posibles: dos
+            # unidades en delta abierto no pueden servir ABC.
+            campo_subtipo="configuracion_banco",
+            subtipos=_subtipos_puesto(),
             campos=_campos_base() + [
                 _c("codigo_estructura", etiqueta="Código de estructura",
                    ayuda="CATALOGOESTRUCTURA — define kVA y configuración de banco"),
@@ -147,7 +490,21 @@ def capas_red() -> list[Capa]:
             nombre="ptnt_cliente",
             tipo_geometria="POINT",
             descripcion="Conexión del consumidor (CONEXIONCONSUMIDOR + ATRIBUTOSCONSUMIDOR)",
+            # La clase de servicio manda sobre la tarifa: un industrial no puede
+            # tener tarifa residencial, y ofrecerla es capturar una imposibilidad
+            # comercial que después nadie sabe si fue error o fraude.
+            campo_subtipo="tipo_servicio",
+            subtipos=_subtipos_cliente(),
+            reglas=_reglas_cliente(),
             campos=_campos_base() + [
+                # Los códigos son los de `ClaseConsumo`, no unos propios: lo que
+                # se captura en campo tiene que ser exactamente la clase con la
+                # que el análisis compara al cliente contra sus pares.
+                _c("tipo_servicio", etiqueta="Clase de servicio",
+                   dominio=["RESIDENCIAL", "COMERCIAL", "INDUSTRIAL", "OFICIAL",
+                            "ASISTENCIA_SOCIAL", "BOMBEO_AGUA",
+                            "ALUMBRADO_PUBLICO"],
+                   ayuda="Determina las tarifas y el número de fases posibles"),
                 _c("cuenta_contrato", etiqueta="Cuenta contrato"),
                 _c("nombre", etiqueta="Nombre del cliente"),
                 _c("tarifa", etiqueta="Tarifa (DESTARI)"),
@@ -159,6 +516,11 @@ def capas_red() -> list[Capa]:
                 _c("medidor_serie", etiqueta="Serie del medidor"),
                 _c("tipo_acometida", dominio=DOM_TIPO_ACOMETIDA,
                    etiqueta="Tipo de acometida"),
+                # El calibre depende del tipo de acometida, no de la clase de
+                # servicio: por eso va por contingencia y no por subtipo.
+                _c("calibre_acometida", etiqueta="Calibre de la acometida",
+                   ayuda="Las opciones cambian según la acometida sea aérea o "
+                         "subterránea"),
                 # La reconexión es editable **a propósito**. Es la corrección
                 # que más vale de todo el trabajo de campo: un cliente colgado
                 # del transformador equivocado desbalancea las dos zonas a la vez
@@ -188,12 +550,24 @@ def capas_red() -> list[Capa]:
             nombre="ptnt_tramo",
             tipo_geometria="LINESTRING",
             descripcion="Tramo de red (TRAMODISTRIBUCIONAEREO / SUBTERRANEO)",
+            # Aéreo o subterráneo cambia el catálogo de conductores entero: un
+            # cable aislado de ducto no es un calibre alternativo del desnudo.
+            campo_subtipo="tipo_red",
+            subtipos=_subtipos_tramo(),
             campos=_campos_base() + [
+                _c("tipo_red", etiqueta="Tipo de red",
+                   dominio=["AEREO_MT", "AEREO_BT", "SUBTERRANEO_MT",
+                            "SUBTERRANEO_BT"],
+                   ayuda="Determina el catálogo de conductores y las tensiones"),
                 _c("codigo_estructura", etiqueta="Código de conductor"),
                 _c("longitud_m", "REAL", etiqueta="Longitud (m)"),
                 _c("n_fases", "INTEGER", etiqueta="Número de fases"),
                 _c("tension_v", "REAL", etiqueta="Tensión (V)"),
                 _c("es_baja_tension", "BOOLEAN", etiqueta="Baja tensión"),
+                # Solo aplican a red subterránea; en aérea quedan ocultos.
+                _c("tipo_ducto", etiqueta="Tipo de ducto",
+                   dominio=["PVC", "HORMIGON", "METALICO", "DIRECTO_ENTERRADO"]),
+                _c("profundidad_m", "REAL", etiqueta="Profundidad (m)"),
                 _c("nodo_origen", editable=False, etiqueta="Nodo origen"),
                 _c("nodo_destino", editable=False, etiqueta="Nodo destino"),
             ],
@@ -202,6 +576,9 @@ def capas_red() -> list[Capa]:
             nombre="ptnt_poste",
             tipo_geometria="POINT",
             descripcion="Estructura de soporte (ESTRUCTURASOPORTE)",
+            # Las alturas normalizadas de hormigón y de madera no coinciden.
+            campo_subtipo="material",
+            subtipos=_subtipos_poste(),
             campos=_campos_base() + [
                 _c("codigo_estructura", etiqueta="Código de estructura"),
                 _c("material", dominio=DOM_MATERIAL_POSTE, etiqueta="Material"),
@@ -212,6 +589,10 @@ def capas_red() -> list[Capa]:
             nombre="ptnt_luminaria",
             tipo_geometria="POINT",
             descripcion="Luminaria de alumbrado público (incluye semáforos y cámaras)",
+            # Semáforo y cámara van como AP no medido por regulación: el defecto
+            # del subtipo evita que su energía se cuente dos veces.
+            campo_subtipo="tipo_ap",
+            subtipos=_subtipos_luminaria(),
             campos=_campos_base() + [
                 _c("codigo_estructura", etiqueta="Código de estructura"),
                 _c("potencia_w", "REAL", etiqueta="Potencia (W)"),
@@ -421,6 +802,14 @@ def esquema_para_movil() -> dict:
     descripción. Así, agregar un campo o un dominio no obliga a publicar una
     versión nueva de la aplicación en la tienda — que en una distribuidora puede
     tardar semanas.
+
+    Los subtipos viajan aquí por la misma razón, y con más motivo: son las reglas
+    que impiden capturar un dato imposible, y tienen que estar en el paquete
+    porque en campo no hay señal para ir a consultarlas.
+
+    ``dominio`` se emite como lista simple de códigos para no romper a los
+    lectores de la versión anterior del esquema, y ``dominio_detalle`` lleva la
+    forma completa —códigos con descripción, o rango—.
     """
 
     return {
@@ -432,12 +821,19 @@ def esquema_para_movil() -> dict:
                 "descripcion": c.descripcion,
                 "editable": c.editable,
                 "srid": c.srid,
+                "campo_subtipo": c.campo_subtipo,
+                "subtipos": [s.a_dict() for s in c.subtipos],
+                "reglas": [r.a_dict() for r in (c.reglas or ())],
                 "campos": [
                     {
                         "nombre": f.nombre, "tipo": f.tipo,
                         "etiqueta": f.etiqueta or f.nombre,
                         "obligatorio": f.obligatorio, "editable": f.editable,
-                        "dominio": f.dominio, "ayuda": f.ayuda,
+                        "dominio": f.codigos_dominio() or None,
+                        "dominio_detalle": (f.dominio_obj().a_dict()
+                                            if f.dominio_obj() else None),
+                        "defecto": f.defecto,
+                        "ayuda": f.ayuda,
                     }
                     for f in c.campos
                 ],
@@ -445,3 +841,9 @@ def esquema_para_movil() -> dict:
             for c in todas_las_capas()
         ],
     }
+
+
+def capa_por_nombre(nombre: str) -> Capa | None:
+    """La definición de una capa, para validar sin reconstruir el esquema entero."""
+
+    return next((c for c in todas_las_capas() if c.nombre == nombre), None)

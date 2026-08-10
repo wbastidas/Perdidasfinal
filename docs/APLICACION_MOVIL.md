@@ -334,6 +334,139 @@ guarda la topología real desde `CIRCUITSOURCEGUID` / `PARENTCIRCUITSOURCEGUID`.
 
 ---
 
+## 3.bis Subtipos: al cambiarlos cambian los dominios
+
+Es el comportamiento que todo editor del SIG da por sentado, y **la razón por la
+que el formulario sirve para algo más que ahorrar tecleo**.
+
+Un banco en delta abierto tiene dos unidades: sus fases posibles son AB, BC o CA.
+**ABC es físicamente imposible.** Si el desplegable ofrece las siete
+combinaciones, alguien elige ABC alguna vez —y no es negligencia, es un
+desplegable con siete opciones bajo el sol—. Ese dato entra al modelo, el flujo
+reparte la carga entre tres fases que no existen, el desbalance de esa zona deja
+de significar nada y la pérdida técnica que se le imputa queda mal para siempre.
+
+El dominio dependiente del subtipo no es una ayuda al técnico: es lo que hace que
+el dato imposible **no sea capturable**.
+
+### Qué cambia al elegir el subtipo
+
+| | |
+|---|---|
+| **Los dominios** | El desplegable pasa a ofrecer solo lo que ese subtipo admite |
+| **Los valores por defecto** | Se rellena lo que estaba vacío, nunca lo capturado |
+| **Qué campos aplican** | Los que no vienen al caso se ocultan y se vacían |
+| **Qué es obligatorio** | El ducto lo es en red subterránea y no existe en aérea |
+
+Los subtipos definidos hoy:
+
+| Capa | Campo de subtipo | Qué gobierna |
+|---|---|---|
+| Puesto de transformación | `configuracion_banco` | Fases posibles y número de unidades |
+| Tramo de red | `tipo_red` | Tensiones válidas, si hay ducto y profundidad |
+| Cliente | `tipo_servicio` | Tarifas (DESTARI), fases y tipo de medidor |
+| Luminaria | `tipo_ap` | Rango de potencia; semáforo y cámara van no medidos |
+| Poste | `material` | Rango de altura razonable |
+
+### Lo capturado no se pierde ni se falsea
+
+Cuando el subtipo cambia, cada campo se resuelve así:
+
+1. **Si lo capturado sigue siendo válido, se respeta.** El técnico lo vio en
+   sitio; el sistema no tiene por qué opinar.
+2. **Si no y el subtipo trae un defecto, se aplica y se avisa.** Un banco
+   trifásico que pasa a delta abierto ve su `ABC` convertido en `AB`, y el panel
+   lo dice: «Fases: ABC → AB».
+3. **Si no hay defecto, se limpia y se pide volver a elegir**, mostrando lo que
+   había. El campo queda marcado en rojo y, si es obligatorio, **no deja
+   guardar**.
+
+Ninguno de los tres es silencioso, a propósito. Una corrección invisible en un
+teléfono es una corrección que el técnico descubre semanas después, cuando ya no
+puede verificar nada. Y un obligatorio vaciado que sí dejara guardar haría que el
+servidor rechazara el lote entero por la tarde, cuando ya no está delante del
+elemento.
+
+### Contingencias: cuando no depende del subtipo
+
+El subtipo cubre lo habitual, pero no todo. El calibre de una acometida depende
+de si es aérea o subterránea, y eso no es la clase de servicio del cliente. Para
+eso están las reglas de contingencia, que **ganan al subtipo** por ser la
+condición más específica:
+
+```
+tipo_acometida = AEREA        → calibre ∈ {dúplex 6, dúplex 4, tríplex 2, tríplex 1/0}
+tipo_acometida = SUBTERRANEA  → calibre ∈ {TTU 6, TTU 4, TTU 2}
+```
+
+### Dónde viven las reglas
+
+| | |
+|---|---|
+| Dominios **base** | `gpkg_data_columns` + `gpkg_data_column_constraints` — la **extensión estándar** del formato: QGIS y ArcGIS los muestran sin saber nada de este proyecto |
+| Subtipos y contingencias | `ptnt_subtipo`, `ptnt_subtipo_dominio`, `ptnt_regla_dominio` — ningún formato de intercambio los expresa |
+| Para la aplicación | El manifiesto del propio `.gpkg` |
+
+Todo va **dentro del archivo que se lleva a campo**. Un formulario cuyas reglas
+viven en otro sitio es un formulario que, sin señal, no tiene reglas.
+
+En el estándar se publica el dominio **base** y no el del subtipo: es el
+superconjunto correcto para un lector que no entiende subtipos, y publicar el del
+subtipo haría que QGIS ocultara valores legítimos de otros subtipos de la misma
+capa.
+
+### Dos cosas que se aprendieron corriéndolo
+
+**Sin subtipo no se supone ninguno.** Buena parte de la red llega del SIG con el
+campo vacío. Asumir el primero aplicaría a esos elementos unas reglas que nadie
+eligió: un tramo de baja tensión heredaría el dominio de media y sus 220 V
+aparecerían como inválidos. Sin subtipo rige el dominio base. Al **crear** un
+elemento sí se propone uno, porque ahí hay que elegir.
+
+**El número que vuelve de SQLite no es el texto del dominio.** Un campo de
+tensión declarado `REAL` vuelve como `220.0` y el dominio dice `"220"`. Comparar
+los textos crudos rechazaba un dato correcto en cada tramo de baja tensión del
+país. Las dos mitades —Python y Kotlin— normalizan igual, y tienen que seguir
+haciéndolo: si divergen, el móvil acepta lo que el servidor rechaza.
+
+### El servidor no confía en el cliente
+
+La validación corre **también al sincronizar**, contra el elemento ya editado. No
+es desconfianza del técnico: un paquete puede venir de una versión anterior de la
+aplicación, de un dispositivo que no recibió el esquema nuevo, o de una edición
+hecha con QGIS sobre el mismo archivo —que es legítimo y conviene que lo siga
+siendo—. Validar solo en el móvil es validar donde no está la responsabilidad del
+dato.
+
+```
+[BLOQUEANTE] 1 valor(es) fuera del dominio que les corresponde:
+ptnt_puesto_transformacion/4ecad8fc · «fases» = ABC: no es válido para el
+subtipo «Delta abierto (2 unidades)» (permitidos: AB, BC, CA).
+```
+
+El mensaje nombra el subtipo a propósito: sin eso el supervisor ve «valor
+inválido» en un campo cuyo valor existe en el catálogo, y lo toma por un error
+del sistema.
+
+### Los dominios salen del catálogo, no de este archivo
+
+`codigo_estructura` **no** se acota con una lista escrita en el esquema. Los
+códigos de conductor son los de CATALOGOESTRUCTURA (`COO…`) y salen del catálogo
+del cliente: inventar una lista propia obligaría a mantener dos catálogos, y el
+de campo se quedaría viejo el primer mes. Con el catálogo cargado,
+`dominios_conductor_desde_catalogo()` construye el dominio real; sin él, el campo
+queda libre, que es lo correcto.
+
+Por el mismo motivo las tarifas son las **descripciones de DESTARI tal como
+llegan del sistema comercial**, y una prueba comprueba que cada tarifa ofrecida
+clasifica en la clase que le corresponde **con el mismo clasificador que usa el
+análisis**. Si alguien añade una tarifa que el clasificador no reconoce, falla la
+prueba en vez de fallar callando: ese cliente entraría al análisis como «no
+clasificado» y quedaría fuera de la comparación contra sus pares, que es la
+señal que lo detecta.
+
+---
+
 ## 4. Edición topológica: snap y propagación
 
 El requisito: *si muevo un cliente, la red conectada se mueve con él*. Sin eso,
@@ -701,7 +834,14 @@ Lo que sigue es honesto en las dos direcciones:
 |---|---|
 | Mapa con capas y símbolos | **Sí** — MapLibre GL, render por GPU |
 | Trabajo sin conexión (áreas offline) | **Sí** — el paquete es autocontenido: red, cartografía y formularios |
-| Formularios (Smart Forms) con dominios | **Sí** — y se definen en el backend, sin publicar versión de la app |
+| Formularios con dominios | **Sí** — definidos en el backend, sin publicar versión de la app |
+| **Subtipos que cambian los dominios** | **Sí** — §3.bis |
+| Dominios codificados (código ≠ etiqueta) | **Sí** — se guarda el código, se muestra la descripción |
+| Dominios de rango (mín/máx) | **Sí** — con aviso mientras se teclea |
+| Valores por defecto por subtipo | **Sí** — solo rellenan lo vacío |
+| Contingencias (un campo condiciona a otro) | **Sí** — §3.bis |
+| Campos que dejan de aplicar según el tipo | **Sí** — se ocultan y se vacían |
+| Búsqueda por atributo | **Sí** — cuenta, código, serie, ruta |
 | Edición de atributos y geometría | **Sí** |
 | Snap a elementos existentes | **Sí** |
 | Relaciones entre entidades (related records) | **Sí** — Puesto→Unidad, editable desde el mismo panel |
@@ -712,15 +852,31 @@ Lo que sigue es honesto en las dos direcciones:
 | Cartografía base propia o de terceros | **Sí** — MBTiles libres o caché de ArcGIS Server |
 | **Reconexión topológica con recálculo del balance** | **Sí** — esto Field Maps no lo hace: no conoce el modelo eléctrico |
 | **Invalidación selectiva del análisis** | **Sí** — un cambio dice qué etapas rehacer |
+| **Validación de dominios también en el servidor** | **Sí** — Field Maps confía en el cliente |
+| Visibilidad condicional por expresión (Arcade) | **No** — se cubre el caso por subtipo, no la expresión libre |
+| Valores calculados por expresión en el formulario | **No** — los calculados los produce el backend |
+| Secciones plegables en el formulario | **No** — el orden por relevancia cumple la misma función |
+| Lectura de código de barras / QR | **No** — el medidor se teclea o se fotografía |
+| Filtros de capa definidos por el usuario | **No** — el paquete ya viene recortado a su trabajo |
+| Marcadores y medición sobre el mapa | **No** |
 | Rastreo de recorrido del técnico | **No** — fuera de alcance |
 | Mapas 3D / escenas | **No** |
 | Utility Network de Esri | **No** — el grafo de conectividad es propio y más simple |
 | Marketplace de mapas base en línea | **No** — la cartografía se prepara y se empaqueta |
 
-Lo que **no** está es deliberado: rastrear al técnico es una decisión laboral que
-no corresponde a esta herramienta, y Utility Network resolvería un problema que
-este proyecto no tiene —el grafo que hace falta cabe en una tabla de cinco
-columnas—.
+De lo que **no** está, tres cosas son decisiones y el resto son huecos:
+
+* **Rastrear al técnico** es una decisión laboral que no corresponde a esta
+  herramienta.
+* **Utility Network** resolvería un problema que este proyecto no tiene: el grafo
+  que hace falta cabe en una tabla de cinco columnas.
+* **Los valores calculados por expresión** se dejan fuera a propósito: el score
+  de sospecha o el consumo promedio los calcula el backend con la historia
+  completa, y una fórmula en el teléfono daría un número distinto al del informe.
+
+Los demás —Arcade para visibilidad, secciones plegables, código de barras,
+filtros de usuario, marcadores, medición— son huecos reales, no decisiones. Se
+listan aquí para que nadie los descubra en la calle.
 
 Lo que **sí** está y Field Maps no puede dar es la parte que conoce el dominio:
 un cambio de conexión no es «un atributo editado», es energía que se mueve de una
@@ -734,6 +890,8 @@ zona de balance a otra, y el sistema lo sabe.
 |---|---|
 | Escritor/lector GeoPackage OGC | **Completo y probado** |
 | Esquema del paquete (13 capas) | **Completo** |
+| Subtipos, contingencias y dominios de rango | **Completo y probado** (backend) |
+| Kotlin: subtipos y dominios efectivos en el formulario | **Escrito; sus pruebas no se han ejecutado** (hace falta Gradle y SDK de Android) |
 | Motor topológico backend | **Completo y probado** |
 | Órdenes, asignación, máquina de estados | **Completo y probado** |
 | Reconexión de consumidor con recálculo de dos zonas | **Completo y probado** |

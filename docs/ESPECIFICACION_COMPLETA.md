@@ -290,6 +290,13 @@ dominio), el **módulo** que lo implementa y la **prueba** que lo verifica.
 | RF-202 | **Reparto entre varias cuadrillas** equilibrando carga y compacidad geográfica | `field/distribute.py` |
 | RF-203 | **Definición de trabajo** por alimentador, sector, área o lista de cuentas, con 7 tipos de campaña | `field/workdef.py` |
 | RF-204 | **Paquete GeoPackage OGC** autocontenido: red recortada, órdenes, cartografía offline y esquema de formularios | `field/package.py` |
+| RF-204a | **Subtipos**: al cambiarlos cambian los dominios, los valores por defecto, los campos aplicables y los obligatorios | `field/domains.py` |
+| RF-204b | Un valor que deja de ser válido **cae al defecto del subtipo o se limpia avisando**; nunca se conserva ni se borra en silencio | `field/domains.py` |
+| RF-204c | **Contingencias**: el dominio de un campo puede depender de otro campo, y gana al subtipo | `field/domains.py` |
+| RF-204d | Dominios **codificados** (se guarda el código, se muestra la descripción) y de **rango** | `field/domains.py` |
+| RF-204e | Dominios base en la **extensión estándar `gpkg_schema`**: QGIS y ArcGIS los honran sin conocer el proyecto | `field/gpkg.py` |
+| RF-204f | Los dominios de catálogo salen de **CATALOGOESTRUCTURA y DESTARI**, no de listas escritas en el código | `field/schema.py` |
+| RF-204g | Los dominios se **revalidan en el servidor** al sincronizar, no solo en el dispositivo | `field/sync.py` |
 | RF-205 | **Un paquete por técnico**, con todas sus órdenes; nunca uno por orden | `field/package.py` |
 | RF-206 | Generación de **paquetes en lote** para todo el equipo | `field/package.py` |
 | RF-207 | Edición en campo: **crear, modificar, mover y eliminar** sin conexión | `mobile/` |
@@ -526,6 +533,7 @@ El módulo de campo, en detalle:
 ```
 src/ptnt/field/
 ├── gpkg.py           GeoPackage OGC nativo sobre sqlite3 (sin GDAL)
+├── domains.py        subtipos, dominios codificados/rango y contingencias
 ├── schema.py         13 capas, dominios y esquema que consume el móvil
 ├── workdef.py        Definición del trabajo: alimentador, sector, área, lista
 ├── workorders.py     Usuarios, asignaciones y máquina de estados
@@ -844,6 +852,13 @@ Lo que el sistema **no** hace, dicho explícitamente para que nadie lo suponga:
     otra arquitectura, no un parámetro. El resto de los límites del ejecutor
     —hasta dónde llega la prioridad, qué no se reintenta— están en
     [Recursos](RECURSOS.md) §6.
+11. **El formulario no evalúa expresiones.** Los subtipos y las contingencias
+    cubren la dependencia entre campos; la visibilidad por expresión libre
+    (Arcade) y los valores calculados en el dispositivo no están. Los calculados
+    se dejan fuera a propósito: el score de sospecha lo produce el backend con la
+    historia completa, y una fórmula en el teléfono daría un número distinto al
+    del informe. La comparación completa con Field Maps —incluidos los huecos que
+    sí son huecos— está en [Aplicación móvil](APLICACION_MOVIL.md) §14.bis.
 
 ---
 

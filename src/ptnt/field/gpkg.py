@@ -133,6 +133,11 @@ class Campo:
     ``dominio`` alimenta el desplegable del formulario en el móvil: escribir a
     mano el código de una estructura en un teclado táctil, bajo sol y con guantes,
     es la principal fuente de error de captura en campo.
+
+    Acepta tanto una lista simple (``["A", "B"]``) como un :class:`Dominio` con
+    códigos y descripciones o con rango. La lista simple se sigue admitiendo
+    porque la mayoría de los dominios de este modelo son literales que el técnico
+    lee tal cual; obligar a envolverlos añadiría ruido sin ganar nada.
     """
 
     nombre: str
@@ -140,12 +145,29 @@ class Campo:
     obligatorio: bool = False
     editable: bool = True
     etiqueta: str = ""
-    dominio: list[str] | None = None
+    dominio: list | object | None = None
     ayuda: str = ""
+    # Qué se pone al crear un elemento nuevo cuando el subtipo no dice otra cosa.
+    defecto: object | None = None
 
     def sql(self) -> str:
         return f'"{self.nombre}" {self.tipo}' + (
             " NOT NULL" if self.obligatorio else "")
+
+    def dominio_obj(self):
+        """El dominio normalizado a :class:`Dominio`, o ``None``."""
+
+        from ptnt.field.domains import Dominio
+
+        if self.dominio is None:
+            return None
+        if isinstance(self.dominio, Dominio):
+            return self.dominio
+        return Dominio.codificado(f"dom_{self.nombre}", self.dominio)
+
+    def codigos_dominio(self) -> list[str]:
+        d = self.dominio_obj()
+        return d.codigos if d is not None and d.tipo == "CODIFICADO" else []
 
 
 @dataclass
@@ -159,10 +181,24 @@ class Capa:
     srid: int = SRID_UTM17S
     # Capas de solo consulta (cartografía, referencia) que el móvil no edita.
     editable: bool = True
+    # Campo que hace de subtipo, si la capa tiene. Al cambiarlo cambian los
+    # dominios de otros campos, sus valores por defecto y cuáles aplican — el
+    # mismo comportamiento que el modelo de datos del SIG.
+    campo_subtipo: str = ""
+    subtipos: list = field(default_factory=list)
+    # Contingencias: un dominio que depende de OTRO campo, no del subtipo.
+    reglas: list = field(default_factory=list)
 
     @property
     def tiene_geometria(self) -> bool:
         return self.tipo_geometria != "NONE"
+
+    @property
+    def tiene_subtipos(self) -> bool:
+        return bool(self.campo_subtipo and self.subtipos)
+
+    def campo(self, nombre: str) -> Campo | None:
+        return next((f for f in self.campos if f.nombre == nombre), None)
 
 
 class GeoPackage:
@@ -384,6 +420,133 @@ class GeoPackage:
         if limite:
             sql += f" LIMIT {int(limite)}"
         return [dict(r) for r in self.con.execute(sql)]
+
+    # -- dominios y subtipos ------------------------------------------------
+    def escribir_dominios(self, capas: list[Capa]) -> int:
+        """Escribe los dominios en la **extensión estándar** ``gpkg_schema``.
+
+        Se usa el mecanismo del propio formato —``gpkg_data_columns`` y
+        ``gpkg_data_column_constraints``— y no una tabla propia, porque así QGIS y
+        ArcGIS abren el paquete y muestran los desplegables **sin saber nada de
+        este proyecto**. Que el archivo de campo sea legible con herramientas
+        corrientes es media garantía de que el dato sobrevive al proyecto.
+
+        Los dominios dependientes del subtipo no caben aquí: el formato no los
+        contempla. Esos van en :meth:`escribir_subtipos`, y lo que se registra en
+        el estándar es el dominio **base**, que es el superconjunto correcto para
+        un lector que no entienda subtipos.
+        """
+
+        c = self.con
+        c.executescript("""
+        CREATE TABLE IF NOT EXISTS gpkg_data_columns (
+            table_name TEXT NOT NULL, column_name TEXT NOT NULL,
+            name TEXT, title TEXT, description TEXT,
+            mime_type TEXT, constraint_name TEXT,
+            CONSTRAINT pk_gdc PRIMARY KEY (table_name, column_name));
+
+        CREATE TABLE IF NOT EXISTS gpkg_data_column_constraints (
+            constraint_name TEXT NOT NULL, constraint_type TEXT NOT NULL,
+            value TEXT, min NUMERIC, minIsInclusive BOOLEAN,
+            max NUMERIC, maxIsInclusive BOOLEAN, description TEXT,
+            CONSTRAINT gdcc_ntv UNIQUE (constraint_name, constraint_type, value));
+        """)
+        c.execute(
+            "INSERT OR REPLACE INTO gpkg_extensions VALUES (?,?,?,?,?)",
+            (None, None, "gpkg_schema",
+             "http://www.geopackage.org/spec121/#extension_schema", "read-write"))
+
+        n = 0
+        for capa in capas:
+            for f in capa.campos:
+                dom = f.dominio_obj()
+                if dom is None and not f.etiqueta:
+                    continue
+                nombre_c = dom.nombre if dom is not None else None
+                c.execute(
+                    "INSERT OR REPLACE INTO gpkg_data_columns "
+                    "(table_name, column_name, name, title, description, "
+                    "mime_type, constraint_name) VALUES (?,?,?,?,?,?,?)",
+                    (capa.nombre, f.nombre, f.nombre, f.etiqueta or f.nombre,
+                     f.ayuda, None, nombre_c))
+                if dom is None:
+                    continue
+                if dom.tipo == "RANGO":
+                    c.execute(
+                        "INSERT OR REPLACE INTO gpkg_data_column_constraints "
+                        "(constraint_name, constraint_type, value, min, "
+                        "minIsInclusive, max, maxIsInclusive, description) "
+                        "VALUES (?,?,?,?,?,?,?,?)",
+                        (dom.nombre, "range", None, dom.minimo, 1, dom.maximo, 1,
+                         dom.descripcion))
+                else:
+                    for v in dom.valores:
+                        c.execute(
+                            "INSERT OR REPLACE INTO gpkg_data_column_constraints "
+                            "(constraint_name, constraint_type, value, min, "
+                            "minIsInclusive, max, maxIsInclusive, description) "
+                            "VALUES (?,?,?,?,?,?,?,?)",
+                            (dom.nombre, "enum", v.codigo, None, None, None, None,
+                             v.etiqueta()))
+                n += 1
+        c.commit()
+        return n
+
+    def escribir_subtipos(self, capas: list[Capa]) -> int:
+        """Subtipos y contingencias: el comportamiento que el formato no cubre.
+
+        Va en tablas propias porque **ningún formato de intercambio lo lleva**: ni
+        GeoPackage ni Shapefile expresan «al cambiar este campo cambian los
+        dominios de aquellos». Se escribe en el paquete, junto a los datos, para
+        que la aplicación lo lea del mismo archivo que edita: un formulario cuyas
+        reglas viven en otro sitio es un formulario que en campo, sin señal, no
+        tiene reglas.
+        """
+
+        c = self.con
+        c.executescript("""
+        CREATE TABLE IF NOT EXISTS ptnt_subtipo (
+            capa TEXT NOT NULL, codigo TEXT NOT NULL, etiqueta TEXT,
+            descripcion TEXT, campo_subtipo TEXT NOT NULL, es_defecto INTEGER,
+            ocultos TEXT, obligatorios TEXT, defectos TEXT,
+            PRIMARY KEY (capa, codigo));
+
+        CREATE TABLE IF NOT EXISTS ptnt_subtipo_dominio (
+            capa TEXT NOT NULL, subtipo TEXT NOT NULL, campo TEXT NOT NULL,
+            dominio TEXT NOT NULL,
+            PRIMARY KEY (capa, subtipo, campo));
+
+        CREATE TABLE IF NOT EXISTS ptnt_regla_dominio (
+            capa TEXT NOT NULL, campo_condicion TEXT NOT NULL,
+            valor_condicion TEXT NOT NULL, campo_afectado TEXT NOT NULL,
+            dominio TEXT NOT NULL,
+            PRIMARY KEY (capa, campo_condicion, valor_condicion, campo_afectado));
+        """)
+
+        j = lambda v: json.dumps(v, ensure_ascii=False, default=str)  # noqa: E731
+        n = 0
+        for capa in capas:
+            if not capa.tiene_subtipos:
+                continue
+            for i, s in enumerate(capa.subtipos):
+                c.execute(
+                    "INSERT OR REPLACE INTO ptnt_subtipo VALUES (?,?,?,?,?,?,?,?,?)",
+                    (capa.nombre, s.codigo, s.titulo(), s.descripcion,
+                     capa.campo_subtipo, 1 if i == 0 else 0,
+                     j(list(s.ocultos)), j(list(s.obligatorios)), j(s.defectos)))
+                for campo, dom in s.dominios.items():
+                    c.execute(
+                        "INSERT OR REPLACE INTO ptnt_subtipo_dominio "
+                        "VALUES (?,?,?,?)",
+                        (capa.nombre, s.codigo, campo, j(dom.a_dict())))
+                n += 1
+            for r in capa.reglas or ():
+                c.execute(
+                    "INSERT OR REPLACE INTO ptnt_regla_dominio VALUES (?,?,?,?,?)",
+                    (capa.nombre, r.campo_condicion, r.valor_condicion,
+                     r.campo_afectado, j(r.dominio.a_dict())))
+        c.commit()
+        return n
 
     # -- metadatos del paquete --------------------------------------------
     def escribir_manifiesto(self, datos: dict) -> None:

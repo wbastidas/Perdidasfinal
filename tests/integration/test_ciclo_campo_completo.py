@@ -92,7 +92,7 @@ def test_lo_que_el_movil_escribe_el_backend_lo_entiende(jornada):
         clientes = sim.elementos("ptnt_cliente", limite=3)
         for c in clientes:
             sim.editar_atributos("ptnt_cliente", str(c["guid"]),
-                                 {"hallazgo": "NORMAL", "inspeccionado": 1},
+                                 {"hallazgo": "SIN_NOVEDAD", "inspeccionado": 1},
                                  motivo="Inspección en sitio")
             sim.fotografiar(str(c["guid"]), "ptnt_cliente",
                             descripcion="Medidor")
@@ -206,7 +206,7 @@ def test_dos_jornadas_no_duplican_el_historico(jornada):
         sim.abrir_orden(str(sim.ordenes()[0]["orden_trabajo"]))
         c = sim.elementos("ptnt_cliente", limite=4)[3]
         sim.editar_atributos("ptnt_cliente", str(c["guid"]),
-                             {"hallazgo": "NORMAL"}, motivo="Día 2")
+                             {"hallazgo": "SIN_NOVEDAD"}, motivo="Día 2")
         assert sim.pendientes() == 1
 
     with retorno.open("rb") as f:

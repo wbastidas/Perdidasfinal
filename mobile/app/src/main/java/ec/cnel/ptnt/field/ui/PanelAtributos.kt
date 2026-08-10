@@ -26,8 +26,10 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import ec.cnel.ptnt.field.data.CampoFormulario
 import ec.cnel.ptnt.field.data.CapaFormulario
+import ec.cnel.ptnt.field.data.Dominio
 import ec.cnel.ptnt.field.data.Elemento
 import ec.cnel.ptnt.field.data.Relacion
+import ec.cnel.ptnt.field.data.Subtipo
 
 /**
  * Formulario de atributos del elemento seleccionado.
@@ -77,6 +79,11 @@ fun PanelAtributos(
     var motivo by remember(elemento.guid) { mutableStateOf("") }
     var pestana by remember(elemento.guid) { mutableStateOf(0) }
     var reconectando by remember(elemento.guid) { mutableStateOf(false) }
+    // Qué se ajustó al cambiar el subtipo, y qué campos quedaron esperando que
+    // el técnico vuelva a elegir. Se recuerda por elemento: al cambiar de
+    // elemento el aviso ya no viene a cuento.
+    var avisoSubtipo by remember(elemento.guid) { mutableStateOf("") }
+    var pendientesDeElegir by remember(elemento.guid) { mutableStateOf(setOf<String>()) }
 
     Column(modifier) {
         Encabezado(elemento, capa, borrador.size)
@@ -90,9 +97,35 @@ fun PanelAtributos(
 
         Box(Modifier.weight(1f)) {
             when (pestana) {
-                0 -> FormularioCampos(elemento, capa, borrador) { k, v ->
-                    borrador = borrador + (k to v)
-                }
+                0 -> FormularioCampos(
+                    elemento = elemento,
+                    capa = capa,
+                    borrador = borrador,
+                    avisoSubtipo = avisoSubtipo,
+                    pendientes = pendientesDeElegir,
+                    onCambiar = { k, v ->
+                        borrador = borrador + (k to v)
+                        pendientesDeElegir = pendientesDeElegir - k
+                    },
+                    onCambiarSubtipo = { nuevo ->
+                        val capaActual = capa
+                        if (capaActual == null) {
+                            borrador = borrador + (nuevo to nuevo)
+                        } else {
+                            val cambio = capaActual.aplicarSubtipo(
+                                elemento.atributos + borrador, nuevo)
+                            // Solo lo que difiere del original entra al borrador:
+                            // meterlo entero marcaría como editados campos que
+                            // nadie tocó, y el contador de pendientes mentiría.
+                            borrador = cambio.atributos.filter { (k, v) ->
+                                elemento.atributos[k]?.toString() != v?.toString()
+                            }
+                            pendientesDeElegir = cambio.invalidados.keys
+                            avisoSubtipo = if (cambio.hayQueAvisar)
+                                cambio.resumen { capaActual.etiquetaDe(it) } else ""
+                        }
+                    }
+                )
                 1 -> ListaRelacionados(
                     relacionados, onAbrirRelacionado,
                     puedeReconectar = candidatosReconexion.isNotEmpty(),
@@ -103,8 +136,19 @@ fun PanelAtributos(
         }
 
         Divider()
+        // Un obligatorio que quedó vacío porque el subtipo cambió no puede
+        // guardarse: el servidor rechazaría el lote entero al sincronizar, y eso
+        // se descubre en la oficina, cuando el técnico ya no está delante del
+        // elemento y no puede verificar nada.
+        val faltan = pendientesDeElegir.filter {
+            capa?.esObligatorio(it, elemento.atributos + borrador) == true
+        }
         BarraAcciones(
             hayCambios = borrador.isNotEmpty(),
+            bloqueadoPor = if (faltan.isEmpty()) "" else
+                "Falta elegir " + faltan.joinToString(", ") {
+                    capa?.etiquetaDe(it) ?: it
+                },
             enModoMover = enModoMover,
             tieneGeometria = elemento.geometria != null,
             onGuardar = { onGuardar(borrador, motivo); borrador = emptyMap() },
@@ -177,30 +221,98 @@ private fun FormularioCampos(
     elemento: Elemento,
     capa: CapaFormulario?,
     borrador: Map<String, Any?>,
-    onCambiar: (String, Any?) -> Unit
+    avisoSubtipo: String,
+    pendientes: Set<String>,
+    onCambiar: (String, Any?) -> Unit,
+    onCambiarSubtipo: (String) -> Unit,
 ) {
-    val campos = capa?.camposOrdenados ?: elemento.atributos.keys.map {
+    // El estado del elemento tal como quedaría si se guardara ahora: es lo que
+    // decide qué dominios rigen. Mirar solo los atributos guardados haría que al
+    // cambiar el subtipo los desplegables siguieran mostrando los de antes.
+    val estado = elemento.atributos + borrador
+
+    val campos = capa?.camposVisibles(estado) ?: elemento.atributos.keys.map {
         CampoFormulario(it, "TEXT", it, false, it !in NO_EDITABLES, emptyList(), "")
     }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())
         .padding(horizontal = 14.dp, vertical = 8.dp)) {
+
+        if (avisoSubtipo.isNotBlank()) AvisoCambioSubtipo(avisoSubtipo)
+
         campos.filter { it.nombre !in OCULTOS }.forEach { c ->
             // `containsKey` y no elvis: vaciar un campo guarda null en el
             // borrador, y con `?:` el valor original reaparecería en pantalla
             // como si el borrado no hubiera ocurrido.
             val valor = if (borrador.containsKey(c.nombre)) borrador[c.nombre]
             else elemento.atributos[c.nombre]
-            CampoEditable(c, valor) { onCambiar(c.nombre, it) }
+            val esSubtipo = capa?.tieneSubtipos == true && c.nombre == capa.campoSubtipo
+
+            CampoEditable(
+                campo = c,
+                valor = valor,
+                dominio = capa?.dominioEfectivo(c.nombre, estado),
+                obligatorio = capa?.esObligatorio(c.nombre, estado) ?: c.obligatorio,
+                subtipos = if (esSubtipo) capa!!.subtipos else emptyList(),
+                pendienteDeElegir = c.nombre in pendientes,
+                onCambiar = {
+                    if (esSubtipo) onCambiarSubtipo(it?.toString().orEmpty())
+                    else onCambiar(c.nombre, it)
+                }
+            )
             Spacer(Modifier.height(10.dp))
         }
         Spacer(Modifier.height(80.dp))       // aire bajo la barra de acciones
     }
 }
 
+/**
+ * Lo que cambió al elegir otro subtipo, dicho de frente.
+ *
+ * Una corrección invisible en un teléfono es una corrección que el técnico
+ * descubre semanas después, cuando ya no puede verificar nada. Si el sistema
+ * ajustó o limpió un valor que él capturó en sitio, tiene que enterarse ahí
+ * mismo, mientras todavía está parado delante del elemento.
+ */
 @Composable
-private fun CampoEditable(campo: CampoFormulario, valor: Any?, onCambiar: (Any?) -> Unit) {
+private fun AvisoCambioSubtipo(texto: String) {
+    Surface(
+        color = MaterialTheme.colorScheme.tertiaryContainer,
+        shape = RoundedCornerShape(10.dp),
+        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+    ) {
+        Column(Modifier.padding(12.dp)) {
+            Text("Al cambiar el tipo se ajustaron campos",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onTertiaryContainer)
+            Spacer(Modifier.height(4.dp))
+            Text(texto, style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onTertiaryContainer)
+        }
+    }
+}
+
+@Composable
+private fun CampoEditable(
+    campo: CampoFormulario,
+    valor: Any?,
+    dominio: Dominio?,
+    obligatorio: Boolean,
+    subtipos: List<Subtipo>,
+    pendienteDeElegir: Boolean,
+    onCambiar: (Any?) -> Unit,
+) {
     when {
-        !campo.editable -> SoloLectura(campo, valor)
+        !campo.editable -> SoloLectura(campo, valor, dominio)
+        // El subtipo se elige de su propia lista, con la etiqueta descriptiva:
+        // «Delta abierto (2 unidades)» se entiende; DELTA_ABIERTO hay que
+        // saberlo.
+        subtipos.isNotEmpty() -> Desplegable(
+            campo, valor?.toString() ?: "", obligatorio, pendienteDeElegir,
+            opciones = subtipos.map { it.codigo to it.etiqueta },
+            ayudaExtra = subtipos.firstOrNull {
+                it.codigo == valor?.toString() }?.descripcion.orEmpty(),
+            onCambiar = onCambiar
+        )
         campo.esBooleano -> {
             val marcado = valor?.toString()?.let { it == "1" || it == "true" } ?: false
             Row(verticalAlignment = Alignment.CenterVertically,
@@ -210,20 +322,38 @@ private fun CampoEditable(campo: CampoFormulario, valor: Any?, onCambiar: (Any?)
                 Text(campo.etiqueta, style = MaterialTheme.typography.bodyLarge)
             }
         }
-        campo.tieneDominio -> Desplegable(campo, valor?.toString() ?: "", onCambiar)
-        else -> OutlinedTextField(
-            value = valor?.toString() ?: "",
-            onValueChange = { onCambiar(it.ifBlank { null }) },
-            label = {
-                Text(campo.etiqueta + if (campo.obligatorio) " *" else "")
-            },
-            supportingText = { if (campo.ayuda.isNotBlank()) Text(campo.ayuda) },
-            singleLine = true,
-            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                keyboardType = if (campo.esNumerico) KeyboardType.Number
-                else KeyboardType.Text),
-            modifier = Modifier.fillMaxWidth()
+        dominio != null && !dominio.esRango -> Desplegable(
+            campo, valor?.toString() ?: "", obligatorio, pendienteDeElegir,
+            opciones = dominio.valores.map { it.codigo to it.etiqueta },
+            ayudaExtra = dominio.descripcion,
+            onCambiar = onCambiar
         )
+        else -> {
+            val texto = valor?.toString() ?: ""
+            // El rango se comprueba mientras se teclea: avisar al guardar
+            // obligaría a volver a buscar el campo entre veinte.
+            val fueraDeRango = dominio != null && !dominio.admite(texto)
+            OutlinedTextField(
+                value = texto,
+                onValueChange = { onCambiar(it.ifBlank { null }) },
+                label = { Text(campo.etiqueta + if (obligatorio) " *" else "") },
+                isError = fueraDeRango,
+                supportingText = {
+                    when {
+                        fueraDeRango -> Text(
+                            "Debe estar entre ${dominio!!.minimo} y ${dominio.maximo}",
+                            color = MaterialTheme.colorScheme.error)
+                        dominio?.descripcion?.isNotBlank() == true -> Text(dominio.descripcion)
+                        campo.ayuda.isNotBlank() -> Text(campo.ayuda)
+                    }
+                },
+                singleLine = true,
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                    keyboardType = if (campo.esNumerico) KeyboardType.Number
+                    else KeyboardType.Text),
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
     }
 }
 
@@ -233,18 +363,42 @@ private fun CampoEditable(campo: CampoFormulario, valor: Any?, onCambiar: (Any?)
  * Los dominios llegan del backend y son la razón por la que el dato de campo es
  * comparable: escribir "medidor puenteado", "puenteado" y "PUENTEADO" a mano
  * produce tres hallazgos distintos que ningún reporte agrupa.
+ *
+ * Las opciones son las del dominio **efectivo**: el del subtipo actual si lo
+ * hay, no el catálogo completo. Ofrecer las siete combinaciones de fase en un
+ * banco de dos unidades es dejar que alguien elija una que no existe.
  */
 @Composable
-private fun Desplegable(campo: CampoFormulario, valor: String, onCambiar: (String?) -> Unit) {
+private fun Desplegable(
+    campo: CampoFormulario,
+    valor: String,
+    obligatorio: Boolean,
+    pendienteDeElegir: Boolean,
+    opciones: List<Pair<String, String>>,
+    ayudaExtra: String,
+    onCambiar: (String?) -> Unit,
+) {
     var abierto by remember { mutableStateOf(false) }
+    val visible = opciones.firstOrNull { it.first == valor }?.second ?: valor
     Box(Modifier.fillMaxWidth()) {
         OutlinedTextField(
-            value = valor, onValueChange = {}, readOnly = true,
-            label = { Text(campo.etiqueta + if (campo.obligatorio) " *" else "") },
+            value = visible, onValueChange = {}, readOnly = true,
+            label = { Text(campo.etiqueta + if (obligatorio) " *" else "") },
+            // El campo que quedó sin valor porque el subtipo cambió se marca:
+            // si no, se guarda vacío sin que nadie lo note.
+            isError = pendienteDeElegir,
             trailingIcon = {
                 Icon(Icons.Default.ArrowDropDown, contentDescription = null)
             },
-            supportingText = { if (campo.ayuda.isNotBlank()) Text(campo.ayuda) },
+            supportingText = {
+                when {
+                    pendienteDeElegir -> Text(
+                        "El valor anterior no aplica a este tipo: elija uno",
+                        color = MaterialTheme.colorScheme.error)
+                    ayudaExtra.isNotBlank() -> Text(ayudaExtra)
+                    campo.ayuda.isNotBlank() -> Text(campo.ayuda)
+                }
+            },
             modifier = Modifier.fillMaxWidth()
         )
         // Superficie transparente encima: el campo de texto de solo lectura no
@@ -253,20 +407,33 @@ private fun Desplegable(campo: CampoFormulario, valor: String, onCambiar: (Strin
         DropdownMenu(abierto, { abierto = false }) {
             DropdownMenuItem(text = { Text("(sin valor)") },
                 onClick = { onCambiar(null); abierto = false })
-            campo.dominio.forEach { opcion ->
-                DropdownMenuItem(text = { Text(opcion) },
-                    onClick = { onCambiar(opcion); abierto = false })
+            opciones.forEach { (codigo, etiqueta) ->
+                DropdownMenuItem(
+                    text = { Text(etiqueta) },
+                    // El código se muestra al lado porque es lo que verá el
+                    // supervisor en el reporte: si solo se ve la descripción,
+                    // nadie puede cruzar lo capturado con la base comercial.
+                    trailingIcon = {
+                        if (etiqueta != codigo) Text(
+                            codigo, style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    },
+                    onClick = { onCambiar(codigo); abierto = false })
             }
         }
     }
 }
 
 @Composable
-private fun SoloLectura(campo: CampoFormulario, valor: Any?) {
+private fun SoloLectura(campo: CampoFormulario, valor: Any?, dominio: Dominio?) {
     Column(Modifier.fillMaxWidth()) {
         Text(campo.etiqueta, style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(valor?.toString() ?: "—", style = MaterialTheme.typography.bodyLarge,
+        // También aquí se muestra la descripción: un campo calculado que diga
+        // «RB01» obliga al técnico a saberse el catálogo de memoria.
+        val texto = if (valor == null) "—"
+        else dominio?.descripcionDe(valor) ?: valor.toString()
+        Text(texto, style = MaterialTheme.typography.bodyLarge,
             fontWeight = FontWeight.Medium)
     }
 }
@@ -384,11 +551,17 @@ private fun ListaFotos(fotos: List<Map<String, Any?>>, onTomar: () -> Unit) {
 
 @Composable
 private fun BarraAcciones(
-    hayCambios: Boolean, enModoMover: Boolean, tieneGeometria: Boolean,
+    hayCambios: Boolean, bloqueadoPor: String, enModoMover: Boolean,
+    tieneGeometria: Boolean,
     onGuardar: () -> Unit, onDescartar: () -> Unit, onMover: (Boolean) -> Unit,
     onEliminar: () -> Unit, onFoto: () -> Unit
 ) {
     Column(Modifier.fillMaxWidth().padding(10.dp)) {
+        if (bloqueadoPor.isNotBlank()) {
+            Text(bloqueadoPor, style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error)
+            Spacer(Modifier.height(6.dp))
+        }
         if (enModoMover) {
             Surface(color = MaterialTheme.colorScheme.secondary,
                 shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
@@ -399,7 +572,8 @@ private fun BarraAcciones(
             Spacer(Modifier.height(8.dp))
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onGuardar, enabled = hayCambios, modifier = Modifier.weight(1f)) {
+            Button(onGuardar, enabled = hayCambios && bloqueadoPor.isBlank(),
+                modifier = Modifier.weight(1f)) {
                 Text("Guardar")
             }
             OutlinedButton(onDescartar, enabled = hayCambios) { Text("Descartar") }

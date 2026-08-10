@@ -148,6 +148,8 @@ class LoteSincronizacion:
     autores_completados: int = 0
     # Cambios de jornadas anteriores que ya se habían enviado y se ignoraron.
     cambios_ya_sincronizados: int = 0
+    # Valores que no encajan en el dominio que les rige, subtipo incluido.
+    incoherencias: list = field(default_factory=list)
 
     @property
     def bloqueado(self) -> bool:
@@ -168,6 +170,7 @@ class LoteSincronizacion:
             "fotos": len(self.fotos), "ordenes": len(self.ordenes),
             "ya_sincronizados": self.cambios_ya_sincronizados,
             "hallazgos": len(self.hallazgos),
+            "incoherencias": len(self.incoherencias),
             "bloqueado": self.bloqueado,
         }
 
@@ -294,8 +297,50 @@ def recibir_paquete(
         except Exception:
             lote.ordenes = []
 
+        # Los dominios se comprueban con el elemento **ya editado** delante, no
+        # cambio por cambio: si el técnico cambió el subtipo y una fase en la
+        # misma visita, mirar cada campo por separado diría que la fase vieja era
+        # inválida cuando en realidad se corrigió acto seguido.
+        lote.incoherencias = _validar_dominios(gp, lote)
+
     lote.hallazgos.extend(_validar(lote))
     return lote
+
+
+def _validar_dominios(gp: GeoPackage, lote: LoteSincronizacion) -> list:
+    """Revalida contra los dominios lo que llega, incluidos los del subtipo.
+
+    Se hace **en el servidor** y no por desconfianza del técnico: un paquete
+    puede venir de una versión anterior de la aplicación, de un dispositivo que
+    no recibió el esquema nuevo, o de una edición hecha con QGIS sobre el mismo
+    archivo —que es legítimo y conviene que siga siéndolo—. Validar solo en el
+    móvil es validar donde no está la responsabilidad del dato.
+    """
+
+    from ptnt.field.domains import validar
+    from ptnt.field.schema import capa_por_nombre
+
+    tocados: dict[str, set[str]] = {}
+    for c in lote.cambios:
+        if c.operacion in ("ELIMINAR",) or not c.capa or not c.elemento_guid:
+            continue
+        tocados.setdefault(c.capa, set()).add(c.elemento_guid)
+
+    fallos = []
+    for capa_nombre, guids in tocados.items():
+        definicion = capa_por_nombre(capa_nombre)
+        if definicion is None or not definicion.campos:
+            continue
+        for guid in guids:
+            try:
+                filas = gp.leer(capa_nombre,
+                                where=f"guid = '{guid.replace(chr(39), chr(39) * 2)}'")
+            except Exception:
+                continue
+            if not filas:
+                continue
+            fallos.extend(validar(definicion, filas[0], guid=guid))
+    return fallos
 
 
 def _validar(lote: LoteSincronizacion) -> list[Hallazgo]:
@@ -390,6 +435,21 @@ def _validar(lote: LoteSincronizacion) -> list[Hallazgo]:
         h.append(Hallazgo(
             Severidad.BLOQUEANTE, "SYNC15",
             f"{len(huerfanos)} cambio(s) sin elemento asociado."))
+
+    # Un valor fuera del dominio del subtipo no se acepta: es exactamente el dato
+    # imposible que el subtipo existe para impedir. Un banco de dos unidades
+    # servido en ABC hace que el flujo reparta carga entre tres fases que no
+    # están, y el desbalance de esa zona deja de significar nada.
+    if lote.incoherencias:
+        detalle = "; ".join(str(i) for i in lote.incoherencias[:5])
+        if len(lote.incoherencias) > 5:
+            detalle += f"; … y {len(lote.incoherencias) - 5} más"
+        h.append(Hallazgo(
+            Severidad.BLOQUEANTE, "SYNC20",
+            f"{len(lote.incoherencias)} valor(es) fuera del dominio que les "
+            f"corresponde: {detalle}. Corrija en el dispositivo y vuelva a "
+            "sincronizar; aceptarlos metería al modelo un dato que no puede "
+            "existir."))
 
     return h
 
