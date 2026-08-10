@@ -19,6 +19,18 @@ solo cómo compilarla y qué esperar del proyecto.
 Requiere JDK 17 y el SDK de Android 35. **No hace falta ninguna clave de API**: la
 cartografía viaja dentro del paquete de trabajo que entrega el backend.
 
+## Probar
+
+El paso a paso —simulador sin dispositivo, emulador y teléfono— está en
+[`../docs/PRUEBAS_CAMPO_WINDOWS.md`](../docs/PRUEBAS_CAMPO_WINDOWS.md).
+
+Dos cosas que ahorran tiempo la primera vez:
+
+* Desde el emulador, el servidor **no** es `localhost` sino `http://10.0.2.2:8000`.
+* Buena parte del ciclo se verifica sin compilar nada:
+  `ptnt campo-simular --paquete <archivo>.gpkg` edita el GeoPackage real con las
+  mismas reglas que la app.
+
 ## Qué hay dentro
 
 | Paquete | Qué resuelve |

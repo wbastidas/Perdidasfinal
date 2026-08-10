@@ -34,6 +34,7 @@ pytest --cov=ptnt --cov-report=term-missing   # con cobertura
 | `test_campo.py` | **GeoPackage OGC** (geometría ida y vuelta, envolvente, metadatos estándar, **no pierde columnas con filas heterogéneas**, índice espacial, manifiesto interno), **esquema** (Puesto→Unidad editable por separado, guid estable, dominios para el móvil, fotos con ubicación y fecha), **edición topológica** (**mover un cliente arrastra el extremo de su acometida**, mover un puesto arrastra sus unidades, **la relación eléctrica NO arrastra geometría**, tope de propagación, snap, no se elimina un puesto con dependientes, validación), **órdenes** (solo hash, vincular revoca el anterior, asignación masiva, no reasigna en silencio, máquina de estados), **paquete** (recorte al área, manifiesto, aviso por tamaño, huella), **sincronización** (lee el diario, rechaza paquete ajeno, hueco de secuencia bloquea, GPS impreciso advierte, **revisión parcial**, propagación incoherente advierte, **etapas a recalcular**), **histórico** (campo + archivo, historia de un elemento, más editados) |
 | `test_campo_multiusuario.py` | **Concurrencia** (tres cuadrillas sincronizando a la vez no pierden ninguna actualización, la segunda escritura sobre el estado ya consumido no surte efecto, una transición perdida se reporta como conflicto, la asignación en conflicto no deja nada escrito, cierre idempotente, el registro sobrevive al proceso, **migra un registro JSON anterior**), **reparto entre cuadrillas** (equilibra la carga, mantiene juntas las órdenes de cada una, el tope de jornada deja fuera lo de menor energía, sin coordenadas sigue siendo parejo, **es determinista**, aplicar el reparto deja a cada técnico con lo suyo, criterio desconocido falla claro), bitácora y carga por usuario |
 | `test_campo_reconexion.py` | **Reconexión de consumidor** (la conexión es editable en campo y llega así al móvil, reconectar es topológico y no un atributo, **obliga a recalcular las dos zonas** —origen y destino—, sin origen o destino bloquea el lote, reconectar al mismo transformador solo advierte, un cambio rechazado no arrastra recálculo), **definición del trabajo** (un censo no se evalúa por energía, bloques geográficamente compactos, las cuentas ausentes del padrón se reportan, selección por área dibujada, unir campañas sin códigos repetidos) |
+| `test_campo_subtipos.py` | **Subtipos** (un banco de dos unidades no puede servir tres fases, la tarifa depende de la clase de servicio, la tensión depende de si es media o baja), **cambio de subtipo** (lo válido se respeta, lo que deja de valer cae al defecto avisando, sin defecto se limpia y se pide volver a elegir, los campos que no aplican se ocultan y se vacían, el defecto no pisa lo capturado), **contingencias** (el calibre depende del tipo de acometida y **gana al subtipo**), **rango** (rechaza el error de tecleo; la torre metálica sí llega a 40 m), **validación en el servidor** (nombra el subtipo en el mensaje), **el conductor no se acota con un catálogo inventado** sino con CATALOGOESTRUCTURA, **las tarifas clasifican donde el análisis espera** con el mismo clasificador, **sin subtipo no se supone ninguno**, el número que vuelve de SQLite encaja en el dominio, y el **contrato del manifiesto con Kotlin** |
 | `test_recursos.py` | **Presupuesto** (la memoria manda sobre los núcleos, con memoria de sobra manda la CPU, siempre cabe al menos una, la reserva del sistema no se toca, el tope de configuración gana, **la espera de red no se limita por núcleos**), **ejecutor** (procesa todo aunque haya más tareas que trabajadores, **un fallo no cancela el lote**, sin paralelismo no se arranca ningún proceso, la espera en cola queda medida, las tareas se consumen de forma perezosa), **control de admisión** (solo pasan los que caben y el resto espera, la cola llena responde «reintente», **el turno se libera aunque el bloque falle**, esperar demasiado también se rechaza, el reintento escala con la cola) |
 | `test_ciclo_campo_completo.py` *(integración)* | **Contrato móvil ↔ backend** verificado con el simulador: lo que la app escribe el backend lo lee y lo entiende (autor, precisión, secuencia sin huecos), **mover arrastra la acometida y llega marcado como propagado**, una reconexión recorre el ciclo hasta el recálculo de las dos zonas, **dos jornadas no duplican el histórico**, y eliminar un puesto con clientes se impide en el dispositivo |
 | `test_locations_versioning.py` | **Identidad geográfica estable** (código determinista, agrupa coordenadas cercanas, sectores conservan ubicación al cargar datos nuevos y ante reordenamiento), **registro persistente** (acumula priorizaciones sin inflar por re-ejecución, reincidencia, cierre por inspección, persistencia en disco), **versionado de topología** (alta, sin cambio, cada hash reacciona solo a su dominio, invalidación selectiva por tipo de cambio, historial, **las ubicaciones sobreviven al cambio de red**) |
@@ -178,6 +179,30 @@ orden abierta en el dispositivo figuraba como «descargada» en el backend, de m
 que el tablero del supervisor mostraba trabajo sin empezar donde había una
 cuadrilla trabajando. Las dos están corregidas y con prueba.
 
+Al activar la validación de dominios volvió a pasar lo mismo, y por eso conviene
+correrlo: encontró **datos inventados que ya estaban en el repositorio** —un
+hallazgo `"NORMAL"` que ningún reporte agrupaba con `SIN_NOVEDAD`— y dos defectos
+propios que solo aparecen con datos reales: un campo `REAL` vuelve de SQLite como
+`220.0` contra un dominio que dice `"220"`, y suponer el primer subtipo cuando el
+SIG no trae el campo aplicaba reglas que nadie eligió.
+
+## Una jornada de campo sin dispositivo
+
+```bash
+ptnt campo-simular --paquete outputs/campo/paquetes/jperez.gpkg
+```
+
+Escribe sobre el **GeoPackage real** con las mismas reglas que la aplicación
+—diario con secuencia, subtipos con sus dominios, snap topológico, fotos con
+ubicación y hora—, así que el paquete que sale es indistinguible del que subiría
+un teléfono. Es lo que permite verificar el ciclo completo desde el servidor y
+dejarlo en el programador de tareas.
+
+Lo que **no** sustituye: el render del mapa, los permisos y el GPS bajo cobertura
+real. Eso solo se comprueba en la calle, y sigue pendiente. El paso a paso
+—simulador, emulador y teléfono— está en
+[Probar la app de campo desde Windows](PRUEBAS_CAMPO_WINDOWS.md).
+
 ## Demostración extremo a extremo con datos ficticios
 
 Además de las suites automáticas, `scripts/demo_completa.py` ejecuta el proceso
@@ -207,7 +232,7 @@ tests los fijan como garantía de regresión.
 ## Estado actual
 
 ```
-398 passed
+442 passed
 ```
 
 Cobertura del núcleo de dominio (objetivo de la especificación ≥ 85 %):

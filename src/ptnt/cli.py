@@ -1528,5 +1528,91 @@ def campo_paquetes(
     console.print(f"[green]✓[/] {ok} paquete(s) en {dir_campo / 'paquetes'}")
 
 
+@app.command()
+def campo_simular(
+    paquete: str = typer.Option(..., "--paquete",
+                                help="Ruta del .gpkg descargado por el técnico"),
+    usuario: str = typer.Option("simulador", "--usuario",
+                                help="Quién firma las ediciones"),
+    editar: int = typer.Option(2, "--editar",
+                               help="Cuántos clientes inspeccionar"),
+    subtipo: bool = typer.Option(True, "--subtipo/--sin-subtipo",
+                                 help="Probar el cambio de subtipo y sus dominios"),
+    fotos: bool = typer.Option(True, "--fotos/--sin-fotos"),
+):
+    """Hace en el paquete lo mismo que haría el técnico, **sin dispositivo**.
+
+    Es la forma de probar el ciclo de campo completo desde un Windows de
+    oficina: escribe sobre el GeoPackage real con las mismas reglas que la
+    aplicación —diario de cambios, subtipos, dominios, snap topológico— y deja
+    el archivo listo para subirlo con `ptnt campo-revisar`.
+
+    No sustituye a probar en un teléfono: el render del mapa, los permisos y el
+    GPS bajo cobertura real solo se comprueban en la calle. Sí sustituye a
+    necesitar un teléfono para verificar que el **dato** que produce el ciclo es
+    correcto, que es lo que se puede automatizar.
+    """
+
+    from ptnt.field.domains import aplicar_subtipo
+    from ptnt.field.schema import capa_por_nombre
+    from ptnt.field.simulator import SimuladorCampo
+
+    ruta = Path(paquete)
+    if not ruta.exists():
+        console.print(f"[red]No existe el paquete:[/] {ruta}")
+        raise typer.Exit(code=2)
+
+    hechos: list[tuple[str, str]] = []
+    with SimuladorCampo(ruta, usuario=usuario) as sim:
+        ordenes = sim.ordenes()
+        if ordenes:
+            sim.abrir_orden(str(ordenes[0]["orden_trabajo"]))
+            hechos.append(("Orden abierta", str(ordenes[0]["orden_trabajo"])))
+
+        clientes = sim.elementos("ptnt_cliente", limite=max(editar, 1))
+        for i, c in enumerate(clientes[:editar]):
+            guid = str(c["guid"])
+            sim.editar_atributos(
+                "ptnt_cliente", guid,
+                {"hallazgo": "MEDIDOR_MANIPULADO" if i == 0 else "SIN_NOVEDAD",
+                 "inspeccionado": 1, "lectura_medidor": 10000.0 + i},
+                motivo="Inspección simulada")
+            hechos.append(("Cliente inspeccionado", guid[:8]))
+            if fotos and i == 0:
+                foto = sim.fotografiar(
+                    guid, "ptnt_cliente",
+                    descripcion="Medidor con sellos violentados")
+                hechos.append(("Foto adjunta", f"{foto[:8]} · con ubicación y hora"))
+
+        if subtipo:
+            # La prueba que importa: cambiar el subtipo tiene que arrastrar los
+            # dominios. Un banco de dos unidades no puede quedar sirviendo ABC.
+            capa = capa_por_nombre("ptnt_puesto_transformacion")
+            for p in sim.elementos("ptnt_puesto_transformacion", limite=1):
+                actual = dict(p)
+                cambio = aplicar_subtipo(capa, actual, "DELTA_ABIERTO")
+                nuevos = {k: v for k, v in cambio.atributos.items()
+                          if k in ("configuracion_banco", "fases", "n_unidades")}
+                sim.editar_atributos("ptnt_puesto_transformacion",
+                                     str(p["guid"]), nuevos,
+                                     motivo="Reconfiguración verificada en sitio")
+                hechos.append(("Subtipo cambiado",
+                               f"{actual.get('configuracion_banco') or '(vacío)'}"
+                               f" → DELTA_ABIERTO"))
+                if cambio.resumen():
+                    hechos.append(("Ajuste por subtipo", cambio.resumen()))
+
+        pendientes = sim.pendientes()
+
+    tabla = Table(title=f"Jornada simulada — {usuario}")
+    tabla.add_column("Acción"); tabla.add_column("Detalle")
+    for a, d in hechos:
+        tabla.add_row(a, d)
+    console.print(tabla)
+    console.print(f"[green]✓[/] {pendientes} cambio(s) pendientes en {ruta}")
+    console.print("  Súbalo con [cyan]ptnt campo-revisar --paquete "
+                  f"{ruta}[/] o por la API con [cyan]ptnt campo-servir[/].")
+
+
 if __name__ == "__main__":  # pragma: no cover
     app()

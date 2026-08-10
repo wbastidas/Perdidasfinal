@@ -10,7 +10,7 @@ interfaces, y la trazabilidad requerimiento → módulo → prueba.
 | Sistema | PTNT-BAL — Pérdidas No Técnicas y Balance Energético |
 | Ámbito | Distribuidora eléctrica (modelo de datos CNEL EP, esquema Puesto → Unidad) |
 | Stack | Python 3.11+, pydantic v2, pandas/numpy, DuckDB, typer, Streamlit, FastAPI |
-| Estado | 290 pruebas en verde |
+| Estado | 442 pruebas en verde |
 
 ---
 
@@ -738,7 +738,7 @@ hace fallar el arranque.
 | `synth/escenario_costa.py` | 20 000 clientes | Prueba a escala, 12 alimentadores, informes PDF |
 
 ```bash
-pytest                                    # 380 pruebas
+pytest                                    # 442 pruebas
 python scripts/demo_completa.py           # análisis, 9 pasos
 python scripts/demo_ciclo_completo.py     # CICLO ENTERO, 15 etapas, 22 comprobaciones
 python scripts/demo_campo_multiusuario.py # despacho a 3 cuadrillas
@@ -762,7 +762,7 @@ termina con código de salida distinto de cero si alguna comprobación falla.
 | **Mecanismo de promedio** multi-mes | RF-10…RF-12 | ✅ |
 | Identificar clientes con **hurto** | S1–S9, RF-30…RF-32 | ✅ |
 | Arquitectura, implementación Windows, proceso | `docs/ARQUITECTURA.md`, `INSTALACION_WINDOWS.md`, `PROCESO.md` | ✅ |
-| **Documentado** + pruebas de integración y seguridad | 380 pruebas, 13 documentos | ✅ |
+| **Documentado** + pruebas de integración y seguridad | 442 pruebas, 16 documentos | ✅ |
 | **Interfaz web** para escritorio y para terceros | RF-101, RF-102 | ✅ |
 | Esquema **Puesto → Unidad** | RF-40, §3.1 | ✅ |
 | **CLIRLSCOD** como agrupador | RF-23, RF-73 | ✅ |

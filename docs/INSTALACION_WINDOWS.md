@@ -147,6 +147,21 @@ La distribución interna se hace por MDM o por descarga directa desde la intrane
 Firme el APK con la clave de la distribuidora y **no la versione**: un APK firmado
 con esa clave se instala como si fuera oficial.
 
+### Probar el ciclo de campo sin teléfono
+
+```powershell
+ptnt campo-simular --paquete outputs\campo\paquetes\jperez.gpkg
+```
+
+Hace en el paquete lo mismo que haría el técnico —inspeccionar, fotografiar,
+cambiar el subtipo de un banco, mover un elemento— escribiendo sobre el
+GeoPackage real con las mismas reglas que la aplicación. Sirve para verificar
+todo el ciclo desde el servidor, antes de repartir un solo teléfono.
+
+El **paso a paso completo** —simulador, emulador de Android Studio y teléfono
+físico, con qué mirar en cada uno y los errores típicos— está en
+**[Probar la aplicación de campo desde Windows](PRUEBAS_CAMPO_WINDOWS.md)**.
+
 ## 5.ter Dimensionar el servidor
 
 Antes de poner en producción, compruebe cuánto cabe:

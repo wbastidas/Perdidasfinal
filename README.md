@@ -56,7 +56,18 @@ datos de la red (esquema **Puesto → Unidad** homologado CNEL EP):
     acometida— y capturando fotos con ubicación y hora. Los cambios vuelven,
     **se revisan** y los aceptados disparan el recálculo del balance y del
     ranking.
-13. **Publica los resultados en dos interfaces web**: un tablero de análisis para
+13. **Reproduce el comportamiento del modelo de datos del SIG en el formulario**:
+    al cambiar el **subtipo** de un elemento cambian los dominios de sus campos,
+    sus valores por defecto y cuáles aplican. Un banco en delta abierto tiene dos
+    unidades y sus fases posibles son AB, BC o CA: **ABC es imposible y no se
+    puede elegir**. Los dominios se revalidan también en el servidor, porque la
+    aplicación no es el único que escribe en el paquete.
+14. **Se ajusta a los recursos del equipo**: procesa tantos alimentadores como
+    caben en la memoria disponible —respetando los límites del contenedor— y
+    **encola el resto**; lee las **11 unidades de negocio en paralelo** con tope
+    por base; y acota descargas y subidas de las cuadrillas con cola y
+    `Retry-After`, sin perder nunca el trabajo del día.
+15. **Publica los resultados en dos interfaces web**: un tablero de análisis para
     escritorio (Streamlit, 9 pestañas) y un visor de solo lectura (FastAPI).
 
 > **[Especificación completa](docs/ESPECIFICACION_COMPLETA.md)** — requerimientos,
@@ -68,6 +79,7 @@ datos de la red (esquema **Puesto → Unidad** homologado CNEL EP):
 > [Segmentación de clientes](docs/SEGMENTACION.md) ·
 > **[Prueba a escala — 20 000 clientes](docs/PRUEBA_COSTA_20K.md)** ·
 > **[Aplicación móvil de campo](docs/APLICACION_MOVIL.md)** ·
+> **[Probar la app de campo desde Windows](docs/PRUEBAS_CAMPO_WINDOWS.md)** ·
 > **[El ciclo completo](docs/CICLO_COMPLETO.md)** ·
 > **[Recursos y paralelismo](docs/RECURSOS.md)** ·
 > [Focalización de levantamientos](docs/FOCALIZACION.md) ·
@@ -170,6 +182,7 @@ ptnt servir-visor       # visor de solo lectura  -> http://127.0.0.1:8080
 | `ptnt campo-paquete` | **Genera el GeoPackage descargable** con la red del área y la cartografía offline |
 | `ptnt campo-paquetes` | **Genera de una vez el paquete de cada técnico** con trabajo pendiente |
 | `ptnt campo-servir` | **API de sincronización** para la aplicación móvil |
+| `ptnt campo-simular` | **Hace la jornada del técnico sin dispositivo**: edita el GeoPackage real con las mismas reglas que la app |
 | `ptnt campo-revisar` | **Revisa los cambios de campo** y determina qué recalcular |
 
 ## Instalación por capas (extras)
@@ -207,6 +220,8 @@ src/ptnt/
 ├── org/          # Unidad de Negocio -> Subestación -> Alimentador
 ├── ingest/       # carga parcial: alcance declarado y cobertura
 ├── field/        # trabajo de campo: GeoPackage, órdenes, edición móvil, sync
+│   └── domains.py             # subtipos, dominios codificados/rango, contingencias
+├── runtime/      # ajuste a los recursos: presupuesto, cola con prioridad, admisión
 ├── report/       # informes HTML autocontenidos + gráficos SVG + PDF (Chromium)
 ├── ntl/
 │   ├── signals.py             # señales S1–S9 de hurto
@@ -245,8 +260,23 @@ pytest -m security      # auth, secretos, visor
 pytest --cov=ptnt       # cobertura
 ```
 
-**398 pruebas** en verde (más las pruebas JVM de la app Android, en `mobile/`). Detalle de qué cubre cada archivo y los resultados de la
-demostración extremo a extremo en [`docs/PRUEBAS.md`](docs/PRUEBAS.md).
+**442 pruebas** del backend en verde. Detalle de qué cubre cada archivo y los
+resultados de la demostración extremo a extremo en
+[`docs/PRUEBAS.md`](docs/PRUEBAS.md).
+
+Las pruebas JVM de la aplicación Android (`mobile/`, incluida `SubtipoTest`, que
+fija los **mismos casos** que el backend) están escritas pero **no se han
+ejecutado**: hacen falta Gradle y el SDK de Android. Y el ciclo de campo se puede
+verificar entero **sin dispositivo**:
+
+```bash
+ptnt campo-simular --paquete outputs/campo/paquetes/jperez.gpkg
+python scripts/demo_ciclo_completo.py    # 15 etapas, 22 comprobaciones
+```
+
+Cómo probar la app desde un Windows de oficina —simulador, emulador y teléfono,
+con los errores típicos— en
+[`docs/PRUEBAS_CAMPO_WINDOWS.md`](docs/PRUEBAS_CAMPO_WINDOWS.md).
 
 ## Alcance de esta entrega
 
@@ -278,7 +308,38 @@ independientes (conectividad, atributos y estado de maniobra) que invalidan
 de las ubicaciones para que las órdenes de campo sobrevivan a las cargas nuevas y
 a los cambios de red. Ver [`docs/GUIA_OPERACION.md`](docs/GUIA_OPERACION.md).
 
+**Ciclo de campo completo**: definición del trabajo por alimentador, sector, área
+o listado (7 tipos de campaña, no solo «lo peor del ranking»), reparto entre
+cuadrillas equilibrando carga y compacidad geográfica, un paquete GeoPackage por
+técnico con cartografía offline, edición sin señal con snap topológico,
+**subtipos que arrastran sus dominios**, trabajos de varios días con avance
+parcial, sincronización simultánea de varias cuadrillas con control de admisión,
+revisión humana obligatoria y recálculo selectivo de lo que el cambio afecta.
+Ver [`docs/APLICACION_MOVIL.md`](docs/APLICACION_MOVIL.md).
+
+**Ajuste a los recursos**: paralelismo acotado por memoria —no solo por
+núcleos— respetando los límites del contenedor (cgroup v1/v2), cola con
+prioridad, reintento de fallos pasajeros, lectura en paralelo de las 11 unidades
+de negocio con tope por base, y control de admisión de la API móvil con
+`Retry-After`. Ver [`docs/RECURSOS.md`](docs/RECURSOS.md).
+
 Queda como evolución del motor: modelar el **salto de tensión del transformador**
 (MT→BT) dentro del barrido para la comparación OpenDSS por alimentador completo, y
 la reproducción **IEEE 13/34/123** completa. El esquema de BD ya soporta los
 resultados.
+
+### Lo que no está, dicho de frente
+
+* **Pruebas en dispositivo real.** Render, permisos y GPS bajo cobertura solo se
+  comprueban en la calle. Es lo único del ciclo que queda sin verificar.
+* **Expresiones en el formulario** (visibilidad tipo Arcade). Los valores
+  calculados se dejan fuera a propósito: el score lo produce el backend con la
+  historia completa, y una fórmula en el teléfono daría otro número que el
+  informe.
+* **Reparto entre varias máquinas.** El diseño es de servidor único, como pide la
+  especificación.
+
+La lista completa, con el motivo de cada una, está en
+[`docs/ESPECIFICACION_COMPLETA.md`](docs/ESPECIFICACION_COMPLETA.md) §10 y en la
+comparación con Field Maps de
+[`docs/APLICACION_MOVIL.md`](docs/APLICACION_MOVIL.md) §14.bis.
