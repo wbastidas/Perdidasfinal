@@ -238,7 +238,7 @@ las únicas que quedan pendientes de todo el ciclo.
 ## 6. Qué se prueba solo, en cada cambio
 
 ```powershell
-python -m pytest -q        # 442 pruebas del backend
+python -m pytest -q        # 445 pruebas del backend
 cd mobile; .\gradlew.bat test    # pruebas JVM de la aplicación
 ```
 

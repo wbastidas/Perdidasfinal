@@ -232,7 +232,7 @@ tests los fijan como garantía de regresión.
 ## Estado actual
 
 ```
-442 passed
+445 passed
 ```
 
 Cobertura del núcleo de dominio (objetivo de la especificación ≥ 85 %):

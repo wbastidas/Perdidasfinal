@@ -60,12 +60,38 @@ class TransferCandidate:
 
 
 @dataclass
+class PisoDeteccion:
+    """Qué magnitud de transferencia se puede encontrar con estos datos.
+
+    Una detección sin piso declarado no se puede leer: «no se detectó nada» puede
+    significar que no hubo maniobras o que las hubo y eran más pequeñas que el
+    ruido. Solo el segundo caso justifica pedir más meses de cabecera.
+    """
+
+    ruido_pct: float            # dispersión típica del residuo mes a mes
+    umbral_pct: float           # el que se exigió en esta corrida
+    detectable_pct: float       # a partir de aquí se encuentra de forma fiable
+    detectable_kwh: float       # lo mismo, en energía del alimentador mediano
+
+    def explicacion(self) -> str:
+        return (
+            f"Con estos datos, el residuo mes a mes tiene una dispersión típica de "
+            f"{self.ruido_pct:.1f} %. Una transferencia se distingue del ruido a "
+            f"partir de ~{self.detectable_pct:.1f} % de la cabecera "
+            f"({self.detectable_kwh:,.0f} kWh en un alimentador mediano). "
+            f"El umbral exigido fue {self.umbral_pct:.1f} %: por debajo de esa "
+            f"magnitud, **una maniobra real pasaría inadvertida**."
+        )
+
+
+@dataclass
 class TransferReport:
     status: TransferDetectionStatus
     candidates: list[TransferCandidate] = field(default_factory=list)
     feeders_afectados: set[str] = field(default_factory=set)
     detail: str = ""
     n_periodos: int = 0
+    piso: PisoDeteccion | None = None
 
     def to_dataframe(self) -> pd.DataFrame:
         return pd.DataFrame([
@@ -155,6 +181,14 @@ def detect_transfers(
     alimentadores = list(piv.columns)
     candidatos: list[TransferCandidate] = []
 
+    # Ruido propio de cada alimentador, en kWh. Un alimentador de 2,8 GWh se
+    # desvía del patrón común en cientos de miles de kWh por su cuenta; uno de
+    # 1 GWh, en decenas de miles. Sin esto, la simetría en kWh absolutos rechaza
+    # las transferencias entre un alimentador grande y uno chico —que son
+    # justamente las más habituales, porque se descarga el saturado sobre el que
+    # tiene margen—.
+    ruido = {a: _ruido_kwh(deltas[a]) for a in alimentadores}
+
     for i, per in enumerate(deltas.index):
         fila = deltas.loc[per]
         if fila.isna().all():
@@ -184,9 +218,24 @@ def detect_transfers(
                     continue
                 # simetría: lo que uno pierde, el otro gana
                 simetria = min(abs(da), abs(db)) / max(abs(da), abs(db))
-                if simetria < simetria_min:
+                # …pero medida contra el ruido de cada uno, no en crudo. Dos
+                # residuos que difieren menos de lo que el mayor se mueve solo
+                # son compatibles con una misma transferencia: exigirles
+                # proporcionalidad estricta descarta el par real y deja el caso
+                # sin explicación.
+                holgura = 2.0 * max(ruido.get(fa, 0.0), ruido.get(fb, 0.0))
+                compatible = abs(abs(da) - abs(db)) <= holgura
+                if simetria < simetria_min and not compatible:
                     continue
-                magnitud_par = (abs(da) + abs(db)) / 2.0
+                # La magnitud se estima **ponderando cada alimentador por su
+                # propio ruido**: los dos miden lo mismo —la energía que cambió
+                # de manos— pero el grande la mide peor, porque su desviación
+                # estacional propia es de cientos de miles de kWh. Promediarlos
+                # a partes iguales le da el mismo voto a la medición mala.
+                # Medido sobre el escenario de 20 000 clientes, con 62 600 kWh
+                # reales: la media daba 89 200, el mínimo 56 100, y esto 59 000.
+                magnitud_par = _magnitud_ponderada(
+                    abs(da), ruido.get(fa, 0.0), abs(db), ruido.get(fb, 0.0))
                 if magnitud_par < magnitud_min_kwh:
                     continue
                 # sostenido: el nivel se mantiene el mes siguiente
@@ -200,6 +249,18 @@ def detect_transfers(
                                    (db2 < 0 and abs(db2) > 0.7 * abs(db))
                         sostenido = not revierte
                 if exigir_sostenido and not sostenido:
+                    continue
+
+                # El discriminador que de verdad separa la maniobra del ruido:
+                # una transferencia deja un **escalón permanente en la relación
+                # entre los dos alimentadores** —B pasa a valer más respecto de A
+                # y se queda ahí—, mientras que el ruido hace fluctuar esa
+                # relación sin cambiarle el nivel. Sin esto, la holgura por ruido
+                # que hace falta para emparejar un alimentador grande con uno
+                # chico deja pasar cualquier par que se mueva en sentidos
+                # opuestos un mes cualquiera.
+                paso = _escalon_en_la_razon(piv, fa, fb, i)
+                if exigir_sostenido and paso is False:
                     continue
                 magnitud = magnitud_par
                 confianza = float(np.clip(
@@ -216,6 +277,7 @@ def detect_transfers(
 
     candidatos.sort(key=lambda c: c.confidence, reverse=True)
     afectados = {c.feeder_a for c in candidatos} | {c.feeder_b for c in candidatos}
+    piso = _piso_deteccion(piv, deltas, cambio_min_pct)
     detalle = (
         f"{len(candidatos)} transferencia(s) probable(s) en {n_periodos} períodos. "
         f"Alimentadores afectados: {', '.join(sorted(afectados)) or 'ninguno'}. "
@@ -223,7 +285,112 @@ def detect_transfers(
         if candidatos else
         f"Sin transferencias detectadas en {n_periodos} períodos."
     )
+    if not candidatos and piso is not None:
+        # «No se detectó nada» es ambiguo sin esto: puede ser que no hubo
+        # maniobras, o que las hubo y eran más chicas que el ruido. Solo lo
+        # segundo justifica pedir más meses de cabecera.
+        detalle += " " + piso.explicacion()
     return TransferReport(
         status=TransferDetectionStatus.OK, candidates=candidatos,
         feeders_afectados=afectados, detail=detalle, n_periodos=n_periodos,
+        piso=piso,
+    )
+
+
+def _magnitud_ponderada(da: float, ruido_a: float,
+                        db: float, ruido_b: float) -> float:
+    """Combina las dos mediciones de la misma transferencia, por su precisión.
+
+    Cada alimentador «mide» la energía que cambió de manos con un error del
+    tamaño de su propia variabilidad. Ponderar por el inverso de la varianza es
+    darle más voto al que mide mejor, que casi siempre es el chico.
+    """
+
+    wa = 1.0 / max(ruido_a, 1.0) ** 2
+    wb = 1.0 / max(ruido_b, 1.0) ** 2
+    if wa + wb <= 0:
+        return (da + db) / 2.0
+    return float((da * wa + db * wb) / (wa + wb))
+
+
+def _escalon_en_la_razon(piv: pd.DataFrame, fa: str, fb: str,
+                         i: int) -> bool | None:
+    """¿La relación B/A cambió de nivel en el mes ``i`` y se quedó ahí?
+
+    La razón entre dos alimentadores **cancela la estacionalidad**: los dos suben
+    y bajan juntos con el clima, así que su cociente es plano salvo que alguien
+    mueva carga de uno al otro. Un escalón sostenido en esa razón es la firma de
+    la maniobra; el ruido la hace oscilar sin desplazarle el nivel.
+
+    Devuelve ``None`` cuando no hay meses suficientes a un lado para opinar: con
+    la maniobra en el primer o el último mes, la falta de evidencia no es
+    evidencia de que no la haya.
+    """
+
+    try:
+        r = (piv[fb] / piv[fa]).to_numpy(dtype=float)
+    except Exception:
+        return None
+    antes, despues = r[:i], r[i:]
+    antes = antes[np.isfinite(antes)]
+    despues = despues[np.isfinite(despues)]
+    if antes.size < 2 or despues.size < 2:
+        return None
+
+    salto = float(np.median(despues) - np.median(antes))
+    if salto <= 0:
+        return False        # B no ganó respecto de A: no es esta transferencia
+    disp = float(_mad(antes) + _mad(despues))
+    # Dos desviaciones robustas: por debajo, el «escalón» cabe dentro de lo que
+    # la razón se mueve sola de un mes a otro.
+    return salto > 2.0 * disp if disp > 0 else True
+
+
+def _mad(v: np.ndarray) -> float:
+    return float(1.4826 * np.median(np.abs(v - np.median(v))))
+
+
+def _ruido_kwh(serie: pd.Series) -> float:
+    """Cuánto se mueve solo un alimentador, en kWh, tras descontar lo común.
+
+    Se usa la desviación absoluta mediana: si la serie contiene la maniobra que
+    se está buscando, la desviación típica se infla con ella y el ruido saldría
+    tan alto que la propia maniobra quedaría dentro de lo «normal».
+    """
+
+    v = serie.dropna().to_numpy(dtype=float)
+    if v.size < 3:
+        return 0.0
+    return float(1.4826 * np.median(np.abs(v - np.median(v))))
+
+
+def _piso_deteccion(piv: pd.DataFrame, deltas: pd.DataFrame,
+                    umbral_pct: float) -> PisoDeteccion | None:
+    """Estima a partir de qué magnitud una transferencia se distingue del ruido.
+
+    Se mide sobre el **residuo** —lo que queda tras descontar el movimiento
+    común—, porque es ahí donde el detector busca. Se usa la desviación absoluta
+    mediana y no la desviación típica: si en la serie hay una maniobra real, la
+    típica se infla con ella y el piso saldría más alto de lo que es.
+    """
+
+    try:
+        rel = (deltas / piv.shift(1)).abs().to_numpy(dtype=float) * 100.0
+    except Exception:
+        return None
+    rel = rel[np.isfinite(rel)]
+    if rel.size < 4:
+        return None
+
+    mediana = float(np.median(rel))
+    mad = float(np.median(np.abs(rel - mediana)))
+    # 3 desviaciones robustas sobre la mediana: por debajo de eso, el candidato
+    # es indistinguible de la variación normal de un mes cualquiera.
+    ruido = mediana + 1.4826 * mad
+    detectable = max(3.0 * ruido, umbral_pct)
+    mediano_kwh = float(np.nanmedian(piv.to_numpy(dtype=float)))
+    return PisoDeteccion(
+        ruido_pct=round(ruido, 2), umbral_pct=float(umbral_pct),
+        detectable_pct=round(detectable, 2),
+        detectable_kwh=round(mediano_kwh * detectable / 100.0, 1),
     )

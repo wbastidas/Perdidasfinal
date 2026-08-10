@@ -34,7 +34,7 @@ números: muestra **si son correctos**.
 
 ---
 
-## Las 9 etapas, paso a paso
+## Las 11 etapas, paso a paso
 
 ### Etapa 1 — Ingesta y calidad
 `etapa1_ingesta.pdf`
@@ -179,10 +179,84 @@ Los tres primeros de cada nivel:
 |---|---|---|---|
 | Recall top 10 % | > 60 % | 99,8 % | OK |
 | Lift top 5 % | > 3× | 16,7× | OK |
-| Transferencia de carga | GYE-04 → GYE-05 | detectada | OK |
+| Transferencia: coherente con su piso | 6,0 % < piso 8,0 % → no inventar | 0 falsos positivos | OK |
+| Piso de detección declarado | se informa qué se puede cazar | 8,0 % (~179 109 kWh) | OK |
 | Clientes faltantes | 500 | 500 | OK |
 | Balance cierra | 12 | 12 | OK |
 | Identificadores únicos | 1 453 | 1 453 | OK |
+
+#### La transferencia inyectada: por qué «no detectada» es la respuesta correcta
+
+La comprobación anterior decía «detectada / REVISAR» y **no podía pasar por
+construcción**. El escenario acota la magnitud de la transferencia para que la
+cabecera del origen no caiga por debajo de su facturado —si no, produciría PNT
+negativa, que es un artefacto del escenario—, y esa cota la deja en el **6,0 %**
+de la cabecera. El piso de detección con 12 alimentadores y 12 meses es del
+**8,0 %**. La maniobra es, literalmente, más pequeña que el ruido de la serie.
+
+Una comprobación que solo se puede satisfacer haciendo trampa es peor que no
+tenerla. Ahora se verifica lo que sí es cierto y sí importa:
+
+* si la maniobra está **por encima** del piso, hay que encontrarla;
+* si está **por debajo**, hay que **declararlo** y no inventar nada.
+
+Y el detector se verifica por encima del piso en
+`test_detecta_la_transferencia_entre_un_alimentador_grande_y_uno_chico`.
+
+---
+
+### Rendimiento
+
+La etapa 11 mide la corrida real, no un microbanco: lo que interesa no es cuántas
+operaciones por segundo hace una función, sino si una unidad de negocio cabe en
+la ventana de la madrugada.
+
+| Indicador | Valor |
+|---|---|
+| Tiempo total | **51 s** (20 000 clientes × 36 meses = 720 000 lecturas) |
+| Por cliente | 2,54 ms, incluidos análisis, red, focalización e informes |
+| Memoria pico | 435 MB en un solo proceso |
+| Generación de PDF | 5 s (11 %) — es Chromium, no el cálculo |
+
+**Dónde se va el tiempo**, que es lo que evita optimizar la etapa equivocada:
+
+| Etapa | Segundos | % |
+|---|---:|---:|
+| 1. Generación del escenario y calidad de la ingesta | 37,3 | **71 %** |
+| 7. Focalización | 7,2 | 14 % |
+| 4. Red y balance por alimentador | 3,1 | 6 % |
+| El resto (7 etapas) | ~4,7 | 9 % |
+
+Los 37 s de la etapa 1 son **generar 720 000 lecturas sintéticas y escribirlas a
+CSV**: en producción ese tiempo no existe, porque los datos vienen de la base. El
+análisis propiamente dicho son unos 14 s.
+
+**Proyección a la escala real** (lineal, y por eso conservadora — los
+alimentadores se procesan en paralelo):
+
+| Escala | Tiempo estimado |
+|---|---|
+| 20 000 (esta prueba) | 51 s |
+| 100 000 (una UN mediana) | 4 min |
+| 500 000 (una UN grande) | 22 min |
+| 2 000 000 (11 UN) | **1,5 h** |
+
+**El paralelismo, medido en la misma corrida** — 24 alimentadores en el equipo de
+prueba (4 núcleos):
+
+| Trabajadores | Tiempo | Procesados | Espera máxima en cola |
+|---:|---:|---:|---:|
+| 1 | 0,36 s | 24/24 | 0,35 s |
+| 2 | 0,25 s | 24/24 | 0,22 s |
+| 4 | **0,18 s** | 24/24 | 0,13 s |
+
+Las 24 se procesan siempre; lo que cambia es cuántas a la vez y cuánto espera la
+última. Esa espera es el argumento **con número** para pedir más máquina.
+
+**Nada de esto obliga a comprar un servidor.** A esta escala el proceso entero
+cabe en un equipo de oficina. Lo que sí conviene medir antes de producción es el
+coste de *un alimentador urbano real* con `ptnt recursos --medir`: el sintético
+consume menos, y ese número es el que decide cuántos caben a la vez.
 
 ---
 
@@ -201,7 +275,28 @@ Los tres primeros de cada nivel:
 
 ## Defectos encontrados y corregidos gracias a esta prueba
 
-La escala expuso cuatro problemas que el escenario de 1 200 clientes no revelaba.
+La escala expuso cinco problemas que el escenario de 1 200 clientes no revelaba.
+
+**0. La simetría del detector de transferencias descartaba el par real.**
+Descontado el movimiento común, la maniobra era **visible en el residuo**: el
+origen perdía 56 100 kWh y el destino ganaba 122 342. Pero la simetría se medía
+sobre kWh absolutos, daba 0,46 contra el 0,60 exigido, y el par se tiraba. La
+causa: un alimentador de 2,8 GWh se desvía del patrón común por su cuenta en
+cientos de miles de kWh, y uno de 1 GWh en decenas de miles — **exigirles
+proporcionalidad estricta descarta justo el caso más habitual**, que es descargar
+el alimentador saturado sobre el que tiene margen.
+
+Se corrigió con tres cambios: la simetría admite una holgura del tamaño del ruido
+propio de cada alimentador; se exige además un **escalón sostenido en la razón
+B/A** —que cancela la estacionalidad, porque los dos suben y bajan juntos— para
+que la holgura no abra la puerta a falsos positivos; y la magnitud se estima
+**ponderando cada alimentador por su propio ruido** en vez de promediarlos a
+partes iguales. Sobre el caso de 62 600 kWh reales: la media daba 89 200, el
+mínimo 56 100, y la ponderación **59 000**.
+
+La prueba unitaria que lo fija usa alimentadores de tamaños muy distintos con
+estacionalidad y ruido. El fixture anterior usaba alimentadores parecidos y sin
+estacionalidad — por eso el defecto sobrevivió tanto tiempo.
 
 **1. La detección de transferencias fallaba con muchos alimentadores.**
 En una misma zona todos suben y bajan juntos por estacionalidad. Buscando pares

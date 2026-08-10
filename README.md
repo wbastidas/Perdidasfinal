@@ -260,7 +260,7 @@ pytest -m security      # auth, secretos, visor
 pytest --cov=ptnt       # cobertura
 ```
 
-**442 pruebas** del backend en verde. Detalle de qué cubre cada archivo y los
+**445 pruebas** del backend en verde. Detalle de qué cubre cada archivo y los
 resultados de la demostración extremo a extremo en
 [`docs/PRUEBAS.md`](docs/PRUEBAS.md).
 

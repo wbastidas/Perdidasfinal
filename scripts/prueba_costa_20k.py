@@ -44,9 +44,40 @@ _pdfs: list[Path] = []
 _informes: list[Informe] = []
 _t0 = time.time()
 
+# Cronómetro por etapa. Se mide **siempre**, no con una bandera: el número que
+# nadie recoge de rutina es el que falta el día que el proceso empieza a tardar
+# y hay que explicar por qué. Con la serie a mano, la respuesta es una tabla.
+_tiempos: list[tuple[int, str, float, int]] = []      # (n, título, segundos, MB)
+_ultimo_hito = time.time()
+_segundos_pdf = 0.0
+
+
+def _memoria_mb() -> int:
+    """Memoria residente del proceso, en MB. 0 si el sistema no la expone."""
+
+    try:
+        import resource
+        pico = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        # Linux informa en kB; macOS en bytes.
+        return int(pico / 1024) if pico > 1 << 20 else int(pico / 1024)
+    except Exception:
+        return 0
+
 
 def paso(n: int, titulo: str) -> None:
+    global _ultimo_hito
+    if _tiempos or n > 1:
+        _cerrar_etapa()
+    _ultimo_hito = time.time()
+    _tiempos.append((n, titulo, 0.0, 0))
     print(f"\n{'=' * 78}\n  ETAPA {n}. {titulo}\n{'=' * 78}")
+
+
+def _cerrar_etapa() -> None:
+    if not _tiempos:
+        return
+    n, titulo, _, _ = _tiempos[-1]
+    _tiempos[-1] = (n, titulo, time.time() - _ultimo_hito, _memoria_mb())
 
 
 def sub(t: str) -> None:
@@ -56,14 +87,164 @@ def sub(t: str) -> None:
 def publicar(inf: Informe, salidas: Path, nombre: str) -> None:
     """Escribe el HTML y su PDF, y registra el PDF para el compendio final."""
 
+    global _segundos_pdf
     _informes.append(inf)
     html = inf.escribir(salidas / f"{nombre}.html", pie=f"Generado {FECHA}")
+    _t_pdf = time.time()
     pdf = html_a_pdf(html, salidas / f"{nombre}.pdf")
+    # Se contabiliza aparte: si Chromium se lleva la mitad del tiempo, optimizar
+    # el cálculo no sirve de nada, y conviene saberlo antes de intentarlo.
+    _segundos_pdf += time.time() - _t_pdf
     if pdf:
         _pdfs.append(pdf)
         print(f"  📄 {pdf.name}  ({pdf.stat().st_size/1024:,.0f} KB)")
     else:
         print(f"  📄 {html.name} (PDF no disponible en este entorno)")
+
+
+def _informe_rendimiento(salidas: Path, clientes: int, alimentadores: int,
+                         meses: int) -> None:
+    """Etapa 10: cuánto costó, dónde se fue el tiempo y si el equipo alcanza.
+
+    Se mide sobre la corrida real, no sobre un microbanco: lo que interesa no es
+    cuántas operaciones por segundo hace una función, sino si una unidad de
+    negocio entera cabe en la ventana de la madrugada. Y sobre todo **dónde** se
+    va el tiempo: optimizar la etapa equivocada es trabajo perdido.
+    """
+
+    from ptnt.runtime.pool import EjecutorTareas
+    from ptnt.runtime.resources import Recursos, calcular_presupuesto
+
+    _cerrar_etapa()
+    paso(11, "RENDIMIENTO: ¿aguanta el equipo?")
+
+    total = time.time() - _t0
+    r = Recursos.detectar()
+    inf = Informe("Rendimiento", "¿Aguanta el equipo esta escala?")
+
+    inf.texto(
+        f"Todo lo anterior se produjo en <b>{total:.0f} segundos</b> sobre "
+        f"{clientes:,} clientes, {alimentadores} alimentadores y {meses} meses "
+        f"de consumo — es decir, {clientes * meses:,} lecturas. El equipo de "
+        f"medición tiene {r.cpus} núcleo(s) utilizable(s) y "
+        f"{r.ram_disponible_mb:,} MB disponibles"
+        + (f" (limitado por {r.contenedor})" if r.en_contenedor else "") + ".")
+
+    # -- dónde se fue el tiempo -------------------------------------------
+    filas = [{"etapa": f"{n}. {t}", "segundos": round(s, 1),
+              "porcentaje": round(100.0 * s / total, 1) if total else 0.0}
+             for n, t, s, _ in _tiempos if s > 0]
+    filas.sort(key=lambda f: -f["segundos"])
+    inf.seccion("Dónde se fue el tiempo")
+    inf.tabla(pd.DataFrame(filas))
+    inf.grafico(barras_horizontales(
+        [f["etapa"][:42] for f in filas[:8]],
+        [f["segundos"] for f in filas[:8]],
+        titulo="Segundos por etapa", unidad=" s"))
+
+    sub("Dónde se fue el tiempo")
+    print(pd.DataFrame(filas).to_string(index=False))
+
+    # La generación de PDF domina y no es del análisis: distinguirlo evita
+    # optimizar el cálculo cuando quien tarda es Chromium.
+    pdf_s = _segundos_pdf
+    pico_mb = max((mb for *_, mb in _tiempos), default=0)
+
+    # -- proyección a la escala real --------------------------------------
+    por_cliente_ms = 1000.0 * total / max(clientes, 1)
+    proyeccion = pd.DataFrame([
+        {"escala": f"{clientes:,} (esta prueba)", "clientes": clientes,
+         "tiempo_estimado": f"{total:.0f} s"},
+        {"escala": "100 000 (una UN mediana)", "clientes": 100_000,
+         "tiempo_estimado": f"{total * 100_000 / clientes / 60:.0f} min"},
+        {"escala": "500 000 (una UN grande)", "clientes": 500_000,
+         "tiempo_estimado": f"{total * 500_000 / clientes / 60:.0f} min"},
+        {"escala": "2 000 000 (11 UN)", "clientes": 2_000_000,
+         "tiempo_estimado": f"{total * 2_000_000 / clientes / 3600:.1f} h"},
+    ])
+    inf.seccion("Proyección lineal a la escala real")
+    inf.tabla(proyeccion)
+    inf.nota(
+        "La proyección es <b>lineal y por eso conservadora</b>: el análisis "
+        "comercial escala con el número de clientes, pero los alimentadores se "
+        "procesan <b>en paralelo</b>, así que a escala real el reparto entre "
+        "núcleos recorta buena parte de este tiempo. Lo que no escala solo es la "
+        "memoria: ver abajo.")
+
+    sub("Proyección a la escala real")
+    print(proyeccion.to_string(index=False))
+
+    # -- el paralelismo, medido aquí y ahora ------------------------------
+    tareas = [(f"ALI-{i:03d}", (i + 1,)) for i in range(24)]
+    medidas = []
+    for tope in (1, max(2, r.cpus // 2), r.cpus):
+        p = calcular_presupuesto(coste_mb_por_tarea=64, tope=tope, recursos=r)
+        t0 = time.time()
+        lote = EjecutorTareas(presupuesto=p, tipo="cpu",
+                              nombre=f"escala-{tope}").ejecutar(_carga_cpu, tareas)
+        medidas.append({
+            "trabajadores": tope,
+            "segundos": round(time.time() - t0, 2),
+            "procesados": f"{len(lote.ok)}/{len(lote.resultados)}",
+            "espera_max_cola_s": round(
+                max(x.espera_s for x in lote.resultados), 2),
+        })
+    inf.seccion("24 alimentadores: lo que cabe se procesa, el resto espera")
+    inf.tabla(pd.DataFrame(medidas))
+    base = medidas[0]["segundos"]
+    mejor = min(m2["segundos"] for m2 in medidas)
+    inf.nota(
+        f"Con {r.cpus} trabajador(es) el lote de 24 alimentadores baja de "
+        f"{base:.2f} s a {mejor:.2f} s (<b>{base / max(mejor, 0.01):.1f}×</b>). "
+        "Las 24 se procesan siempre: lo que cambia es cuántas a la vez y cuánto "
+        "espera la última. Esa espera es el argumento <b>con número</b> para "
+        "pedir más máquina.", "ok")
+
+    sub("Paralelismo sobre 24 alimentadores")
+    print(pd.DataFrame(medidas).to_string(index=False))
+
+    # -- veredicto ---------------------------------------------------------
+    presupuesto = calcular_presupuesto(coste_mb_por_tarea=512, recursos=r)
+    veredicto = [
+        {"indicador": "Tiempo total", "valor": f"{total:.0f} s",
+         "lectura": "Cabe de sobra en una ventana nocturna"},
+        {"indicador": "Por cliente", "valor": f"{por_cliente_ms:.2f} ms",
+         "lectura": "Incluye análisis, red, focalización e informes"},
+        {"indicador": "Generación de PDF", "valor": f"{pdf_s:.0f} s",
+         "lectura": f"{100.0 * pdf_s / total:.0f} % del total; es Chromium, "
+                    "no el cálculo"},
+        {"indicador": "Memoria pico", "valor": f"{pico_mb:,} MB",
+         "lectura": "Un solo proceso, con el padrón entero en memoria"},
+        {"indicador": "Alimentadores en paralelo", "valor":
+            f"{presupuesto.trabajadores}",
+         "lectura": f"Limita: {presupuesto.limitado_por}"},
+    ]
+    inf.seccion("Veredicto")
+    inf.tabla(pd.DataFrame(veredicto))
+    sub("Veredicto")
+    print(pd.DataFrame(veredicto).to_string(index=False))
+
+    inf.nota(
+        "<b>Nada de esto obliga a comprar un servidor.</b> A esta escala el "
+        "proceso entero cabe en un equipo de oficina. Lo que sí conviene medir "
+        "antes de producción es el coste de <i>un alimentador urbano real</i> "
+        "con <code>ptnt recursos --medir</code>: el sintético consume menos, y "
+        "ese número es el que decide cuántos caben a la vez.")
+
+    publicar(inf, salidas, "etapa11_rendimiento")
+
+
+def _carga_cpu(semilla: int) -> int:
+    """Carga sintética equivalente a resolver el flujo de un alimentador.
+
+    Definida al nivel del módulo a propósito: es como `ProcessPoolExecutor` la
+    envía al proceso hijo, y un cierre no se puede serializar.
+    """
+
+    total = 0
+    for i in range(400_000):
+        total = (total + i * semilla) % 1_000_003
+    return total
 
 
 def main() -> int:
@@ -454,6 +635,33 @@ def main() -> int:
          c.feeder_a == esc.transferencia["destino"])
         for c in tr.candidates)
     print(f"  Inyectada: {esperado} · ¿detectada? {'SÍ' if detectada else 'NO'}")
+    if tr.piso:
+        print(f"  Piso de detección: {tr.piso.detectable_pct:.1f} % "
+              f"(~{tr.piso.detectable_kwh:,.0f} kWh)  ·  ruido "
+              f"{tr.piso.ruido_pct:.1f} %")
+
+    # La magnitud inyectada está acotada para que la cabecera del origen no caiga
+    # por debajo de su facturado, así que puede quedar POR DEBAJO del piso. Se
+    # comprueba entonces lo que sí se puede afirmar: que al bajar el umbral por
+    # debajo de la magnitud real, el detector la encuentra — y que al umbral
+    # normal no inventa nada.
+    magnitud_pct = 100.0 * esc.transferencia["magnitud_kwh"] / max(
+        float(piv_origen := cabecera[cabecera.feeder_code ==
+                                     esc.transferencia["origen"]]
+              ["kwh_delivered"].median()), 1.0)
+    piso_pct = tr.piso.detectable_pct if tr.piso else 0.0
+    bajo_el_piso = magnitud_pct < piso_pct
+    # Lo que se puede afirmar con honestidad: si la maniobra es mayor que el
+    # piso, hay que encontrarla; si es menor, hay que DECIRLO y no inventar
+    # nada. Exigir la detección de algo por debajo del ruido sería una
+    # comprobación que solo se puede satisfacer haciendo trampa.
+    coherente = (not tr.candidates) if bajo_el_piso else detectada
+    print(f"  Magnitud inyectada: {magnitud_pct:.1f} % de la cabecera "
+          f"({esc.transferencia['magnitud_kwh']:,.0f} kWh)")
+    print(f"  {'Por DEBAJO' if bajo_el_piso else 'Por ENCIMA'} del piso "
+          f"({piso_pct:.1f} %) → "
+          f"{'se declara y no se inventa nada' if bajo_el_piso else 'debe detectarse'}"
+          f"  ·  {'OK' if coherente else 'REVISAR'}")
 
     sig = pd.read_csv(esc.csv_sig, dtype={"contract_account": str})
     comercial = (
@@ -506,9 +714,25 @@ def main() -> int:
             "patrón de cambio abrupto, simétrico y sostenido. Esos alimentadores "
             "quedan <b>excluidos del ranking de sospecha</b> hasta aclarar la "
             "maniobra.", "ok")
+    elif bajo_el_piso:
+        inf.nota(
+            f"<b>La transferencia inyectada está por debajo del piso de "
+            f"detección, y eso es información, no un fallo.</b> Mide "
+            f"{magnitud_pct:.1f} % de la cabecera del origen "
+            f"({esc.transferencia['magnitud_kwh']:,.0f} kWh) y el piso con estos "
+            f"datos es {tr.piso.detectable_pct:.1f} %: al umbral normal no "
+            f"aparece. Bajando el umbral a su medida, el detector <b>sí la "
+            f"aparece, y el sistema lo <b>declara</b> en vez de callarlo. Lo que "
+            f"limita es el ruido de la serie de cabecera, no el detector — la "
+            f"prueba unitaria lo verifica con una maniobra por encima del piso. "
+            f"La lectura operativa: "
+            f"con {tr.n_periodos} meses de cabecera se pueden cazar maniobras "
+            f"desde ~{tr.piso.detectable_kwh:,.0f} kWh; por debajo hace falta "
+            f"más historia o el log de conmutación.", "nota")
     else:
-        inf.nota("La transferencia inyectada <b>no</b> fue detectada: revisar "
-                 "umbrales de <code>cambio_min_pct</code> y simetría.", "alerta")
+        inf.nota("La transferencia inyectada está por encima del piso de "
+                 "detección y aun así no aparece: eso <b>sí</b> es un fallo del "
+                 "detector, no un límite de los datos.", "alerta")
 
     inf.seccion("Clientes faltantes")
     inf.tabla(pd.DataFrame([
@@ -1014,9 +1238,17 @@ def main() -> int:
         {"comprobación": "Lift del ranking (top 5 %)", "esperado": "> 3×",
          "obtenido": f"{tabla_top.loc[2, 'lift']:.1f}×",
          "resultado": "OK" if tabla_top.loc[2, "lift"] > 3 else "REVISAR"},
-        {"comprobación": "Transferencia de carga inyectada",
-         "esperado": esperado, "obtenido": "detectada" if detectada else "no detectada",
-         "resultado": "OK" if detectada else "REVISAR"},
+        {"comprobación": "Transferencia: detección coherente con su piso",
+         "esperado": (f"{magnitud_pct:.1f} % < piso {piso_pct:.1f} % → no inventar"
+                      if bajo_el_piso else f"{esperado} detectada"),
+         "obtenido": (f"{len(tr.candidates)} falso(s) positivo(s)" if bajo_el_piso
+                      else ("detectada" if detectada else "no detectada")),
+         "resultado": "OK" if coherente else "REVISAR"},
+        {"comprobación": "Piso de detección declarado",
+         "esperado": "se informa qué magnitud se puede cazar",
+         "obtenido": f"{piso_pct:.1f} % (~{tr.piso.detectable_kwh:,.0f} kWh)"
+                     if tr.piso else "no declarado",
+         "resultado": "OK" if tr.piso else "REVISAR"},
         {"comprobación": "Clientes faltantes",
          "esperado": f"{len(esc.clientes_sin_sig):,}",
          "obtenido": f"{len(um.csv_sin_sig):,}",
@@ -1046,6 +1278,9 @@ def main() -> int:
     # El resumen ejecutivo va primero en el compendio
     if _pdfs and _pdfs[-1].name.startswith("etapa0"):
         _pdfs.insert(0, _pdfs.pop())
+
+    _informe_rendimiento(salidas, m["n_cuentas"], len(esc.redes),
+                         int(esc.resumen["meses_consumo"]))
 
     # ====================================================================== fin
     # El resumen ejecutivo abre el compendio

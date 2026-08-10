@@ -50,6 +50,96 @@ def test_detecta_transferencia_inyectada():
     assert {"F002", "F003"} <= rep.feeders_afectados
 
 
+def _cabecera_realista(magnitud: float = 140_000.0) -> pd.DataFrame:
+    """Alimentadores de tamaños muy distintos, con estacionalidad y ruido.
+
+    Reproduce lo que rompió la detección en el escenario de 20 000 clientes: el
+    fixture simple usa alimentadores parecidos y sin estacionalidad, y ahí
+    cualquier criterio de simetría funciona. En la realidad se descarga el
+    alimentador saturado sobre el que tiene margen, que casi siempre es de otro
+    tamaño.
+    """
+
+    rng = np.random.default_rng(20260810)
+    tam = {"GYE-01": 1_050_000.0, "GYE-02": 2_800_000.0, "GYE-03": 900_000.0,
+           "GYE-04": 1_600_000.0, "GYE-05": 2_100_000.0}
+    estacion = [1.00, 1.06, 1.14, 1.18, 1.10, 0.98, 0.92, 0.90, 0.93, 0.97, 1.02, 1.05]
+    periodos = pd.date_range("2025-06-01", periods=12, freq="MS")
+    corte = pd.Timestamp("2025-12-01")
+
+    filas = []
+    for p in periodos:
+        est = estacion[p.month - 1]
+        for f, b in tam.items():
+            v = b * est * (1 + rng.normal(0, 0.012))
+            if p >= corte:
+                if f == "GYE-01":
+                    v -= magnitud
+                elif f == "GYE-02":
+                    v += magnitud
+            filas.append({"feeder_code": f, "period": p.date().isoformat(),
+                          "kwh_delivered": round(v, 1)})
+    return pd.DataFrame(filas)
+
+
+@pytest.mark.unit
+def test_detecta_la_transferencia_entre_un_alimentador_grande_y_uno_chico():
+    """Regresión del escenario de 20 000 clientes.
+
+    La simetría se medía sobre kWh absolutos, y un alimentador de 2,8 GWh se
+    desvía del patrón común por su cuenta en cientos de miles de kWh. Con eso, el
+    par real daba simetría 0,46 contra el 0,60 exigido y **se descartaba**: la
+    maniobra existía, era visible en el residuo, y el detector la tiraba.
+
+    Es justo el caso habitual: se descarga el alimentador saturado sobre el que
+    tiene margen, y rara vez son del mismo tamaño.
+    """
+
+    # Umbral por defecto: la transferencia inyectada (140 000 kWh ≈ 13 % del
+    # alimentador chico) está claramente por encima del piso de ruido.
+    rep = detect_transfers(_cabecera_realista())
+
+    par = [c for c in rep.candidates
+           if {c.feeder_a, c.feeder_b} == {"GYE-01", "GYE-02"}
+           and c.period.startswith("2025-12")]
+    assert par, (
+        "no encontró la transferencia inyectada entre un alimentador de "
+        f"1,05 GWh y uno de 2,8 GWh. Candidatos: "
+        f"{[(c.feeder_a, c.feeder_b, c.period) for c in rep.candidates]}")
+    c = par[0]
+    # La magnitud pondera cada alimentador por su propio ruido: el grande mide
+    # la misma transferencia con mucho menos precisión y no puede pesar igual.
+    assert 100_000 <= c.magnitude_kwh <= 190_000, (
+        f"magnitud estimada {c.magnitude_kwh:,.0f} lejos de los 140 000 reales")
+
+
+@pytest.mark.unit
+def test_una_serie_sin_maniobras_no_produce_candidatos():
+    """La holgura por ruido no puede convertirse en una puerta abierta: si nadie
+    transfirió nada, no puede aparecer ningún par."""
+
+    limpia = _cabecera_realista(magnitud=0.0)
+    rep = detect_transfers(limpia)
+    assert not rep.candidates, (
+        f"inventó {len(rep.candidates)} transferencia(s) donde no hubo ninguna: "
+        f"{[(c.feeder_a, c.feeder_b, c.period) for c in rep.candidates]}")
+
+
+@pytest.mark.unit
+def test_el_piso_de_deteccion_se_declara():
+    """«No se detectó nada» es ambiguo sin el piso: puede ser que no hubo
+    maniobras, o que las hubo y eran más chicas que el ruido. Solo lo segundo
+    justifica pedir más meses de cabecera."""
+
+    rep = detect_transfers(_cabecera_realista(magnitud=0.0), cambio_min_pct=8.0)
+
+    assert rep.piso is not None
+    assert rep.piso.ruido_pct > 0
+    assert rep.piso.detectable_pct >= 8.0, "nunca por debajo del umbral exigido"
+    assert rep.piso.detectable_kwh > 0
+    assert "pasaría inadvertida" in rep.detail
+
+
 @pytest.mark.unit
 def test_un_solo_mes_no_permite_detectar():
     """Con un solo mes de cabecera la detección no es posible: debe declararlo,
