@@ -24,6 +24,13 @@ uno que está a punto de caerse.
 La detección funciona sin dependencias externas. `psutil` se usa si está
 instalado porque da la memoria **disponible** de verdad (contando caché
 reclamable); si no está, se lee del sistema operativo directamente.
+
+**Y se respeta el contenedor.** Dentro de un contenedor con `--memory=2g`,
+tanto `/proc/meminfo` como `psutil` siguen mostrando la memoria del *anfitrión*:
+la plataforma creería tener 64 GB, lanzaría treinta alimentadores y el núcleo
+mataría el contenedor entero por exceder su cgroup. Igual con `--cpus=1.5`, que
+no toca la afinidad sino la cuota CFS y por tanto `sched_getaffinity` no lo ve.
+Por eso se leen los límites del cgroup y se toma **el menor** de los dos.
 """
 
 from __future__ import annotations
@@ -33,10 +40,20 @@ import os
 import platform
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 
 # Si no se puede averiguar la memoria, se asume un equipo modesto. Equivocarse
 # por abajo cuesta velocidad; equivocarse por arriba cuesta el trabajo entero.
 _RAM_DESCONOCIDA_MB = 4096
+
+# Dónde monta Linux los controladores de cgroup. Es parámetro de las funciones
+# para poder probarlas contra un árbol de ficheros de mentira, que es la única
+# forma de verificar el caso «contenedor de 2 GB» sin levantar un contenedor.
+_RAIZ_CGROUP = Path("/sys/fs/cgroup")
+
+# cgroup v1 escribe un número enorme (no "max") cuando no hay tope; por encima de
+# este umbral se entiende «sin límite» y no un contenedor de nueve exabytes.
+_SIN_TOPE = 1 << 62
 
 
 @dataclass(frozen=True)
@@ -47,9 +64,16 @@ class Recursos:
     ram_total_mb: int
     ram_disponible_mb: int
     fuente: str                      # de dónde salió la medición
+    # Vacío si se está sobre el equipo desnudo; "cgroup v1"/"cgroup v2" si lo que
+    # manda es el tope del contenedor y no lo que tenga el anfitrión.
+    contenedor: str = ""
+
+    @property
+    def en_contenedor(self) -> bool:
+        return bool(self.contenedor)
 
     def resumen(self) -> dict:
-        return {
+        d = {
             "cpus": self.cpus,
             "ram_total_mb": self.ram_total_mb,
             "ram_disponible_mb": self.ram_disponible_mb,
@@ -57,13 +81,37 @@ class Recursos:
                 100.0 * self.ram_disponible_mb / max(self.ram_total_mb, 1), 1),
             "medicion": self.fuente,
         }
+        if self.contenedor:
+            # Que se vea: si no, quien mire el tablero leerá 2 GB en un servidor
+            # de 64 y creerá que la plataforma mide mal.
+            d["limitado_por_contenedor"] = self.contenedor
+        return d
 
     @classmethod
-    def detectar(cls) -> "Recursos":
-        cpus = _cpus_utilizables()
+    def detectar(cls, *, raiz_cgroup: Path | None = None) -> "Recursos":
+        raiz = raiz_cgroup or _RAIZ_CGROUP
         total, disponible, fuente = _memoria_mb()
-        return cls(cpus=cpus, ram_total_mb=total,
-                   ram_disponible_mb=disponible, fuente=fuente)
+        cpus = _cpus_utilizables()
+        contenedor = ""
+
+        tope = _cgroup_memoria(raiz)
+        if tope:
+            limite_mb, libre_mb, version = tope
+            # El menor de los dos: el contenedor puede declarar más memoria de la
+            # que el anfitrión tiene libre, y ahí el que manda es el anfitrión.
+            if limite_mb < total:
+                total, disponible = limite_mb, min(disponible, libre_mb)
+                fuente, contenedor = f"{fuente}+{version}", version
+
+        cuota = _cgroup_cpus(raiz)
+        if cuota and cuota[0] < cpus:
+            # `--cpus=1.5` no toca la afinidad, toca la cuota CFS: sin esto se
+            # lanzarían tantos procesos como núcleos tenga el anfitrión y todos
+            # se pasarían el tiempo estrangulados por el planificador.
+            cpus, contenedor = cuota[0], contenedor or cuota[1]
+
+        return cls(cpus=cpus, ram_total_mb=total, ram_disponible_mb=disponible,
+                   fuente=fuente, contenedor=contenedor)
 
 
 @dataclass(frozen=True)
@@ -145,15 +193,22 @@ def calcular_presupuesto(
         recursos=r)
 
 
-def memoria_disponible_mb() -> int:
+def memoria_disponible_mb(*, raiz_cgroup: Path | None = None) -> int:
     """Memoria disponible **ahora**, para decidir si admitir una tarea más.
 
     El presupuesto se calcula una vez, pero el equipo cambia mientras se trabaja:
     otro proceso arranca, alguien abre el tablero. Consultar antes de cada tarea
     evita lanzar la que rompe el equipo.
+
+    Mira también el cgroup: dentro de un contenedor, el margen que importa es el
+    del contenedor. Con solo `/proc/meminfo`, el control de admisión vería libre
+    la memoria del anfitrión y no retendría **ninguna** tarea justo en el equipo
+    donde más falta hace.
     """
 
-    return _memoria_mb()[1]
+    disponible = _memoria_mb()[1]
+    tope = _cgroup_memoria(raiz_cgroup or _RAIZ_CGROUP)
+    return min(disponible, tope[1]) if tope else disponible
 
 
 def hay_margen(coste_mb: int, *, reserva_mb: int = 1024) -> bool:
@@ -177,6 +232,98 @@ def _cpus_utilizables() -> int:
         return max(1, len(os.sched_getaffinity(0)))     # Linux
     except AttributeError:
         return max(1, os.cpu_count() or 1)
+
+
+# --------------------------------------------------------------------------- #
+# Límites del contenedor
+# --------------------------------------------------------------------------- #
+def _leer_entero(ruta: Path) -> int | None:
+    """Primer entero de un fichero de cgroup, o ``None`` si no aplica.
+
+    ``"max"`` (v2) y los enteros astronómicos (v1) significan lo mismo: no hay
+    tope, así que no hay nada que acotar.
+    """
+
+    try:
+        texto = ruta.read_text(encoding="ascii").split()[0]
+    except (OSError, IndexError, UnicodeDecodeError):
+        return None
+    if texto == "max":
+        return None
+    try:
+        valor = int(texto)
+    except ValueError:
+        return None
+    return None if valor <= 0 or valor >= _SIN_TOPE else valor
+
+
+def _cgroup_memoria(raiz: Path) -> tuple[int, int, str] | None:
+    """``(límite_mb, libre_mb, versión)`` del contenedor, o ``None`` si no hay tope.
+
+    «Libre» dentro de un cgroup no es ``límite - usado``: buena parte de lo usado
+    es caché de ficheros que el núcleo devuelve en cuanto alguien pide memoria.
+    Restarla sin más dejaría la plataforma trabajando de a un alimentador después
+    de leer un GeoPackage grande, por creer llena una memoria que está
+    disponible.
+    """
+
+    for version, tope, uso, stat, reclamables in (
+        ("cgroup v2", "memory.max", "memory.current", "memory.stat",
+         ("inactive_file", "slab_reclaimable")),
+        ("cgroup v1", "memory/memory.limit_in_bytes",
+         "memory/memory.usage_in_bytes", "memory/memory.stat",
+         ("total_inactive_file",)),
+    ):
+        limite = _leer_entero(raiz / tope)
+        if limite is None:
+            continue
+        usado = _leer_entero(raiz / uso) or 0
+        libre = limite - usado + _reclamable(raiz / stat, reclamables)
+        return (limite // (1 << 20),
+                max(0, min(limite, libre)) // (1 << 20),
+                version)
+    return None
+
+
+def _reclamable(ruta: Path, claves: tuple[str, ...]) -> int:
+    """Bytes que el cgroup tiene ocupados pero devolvería sin rechistar."""
+
+    total = 0
+    try:
+        for linea in ruta.read_text(encoding="ascii").splitlines():
+            partes = linea.split()
+            if len(partes) >= 2 and partes[0] in claves:
+                total += int(partes[1])
+    except (OSError, ValueError, UnicodeDecodeError):
+        return 0
+    return total
+
+
+def _cgroup_cpus(raiz: Path) -> tuple[int, str] | None:
+    """Núcleos que permite la **cuota** del contenedor, no su afinidad.
+
+    Se redondea hacia abajo: con 1,5 núcleos de cuota, lanzar dos procesos de
+    cálculo no da 1,5 veces la velocidad —los estrangula el planificador y se
+    pierde el tiempo en cambios de contexto—. Nunca baja de 1.
+    """
+
+    # v2: "<cuota> <periodo>" en un solo fichero, o "max <periodo>".
+    try:
+        partes = (raiz / "cpu.max").read_text(encoding="ascii").split()
+        if len(partes) >= 2 and partes[0] != "max":
+            cuota, periodo = int(partes[0]), int(partes[1])
+            if cuota > 0 and periodo > 0:
+                return max(1, cuota // periodo), "cgroup v2"
+        return None
+    except (OSError, ValueError, UnicodeDecodeError):
+        pass
+
+    # v1: cuota y periodo en ficheros separados; -1 es «sin tope».
+    cuota = _leer_entero(raiz / "cpu/cpu.cfs_quota_us")
+    periodo = _leer_entero(raiz / "cpu/cpu.cfs_period_us")
+    if cuota and periodo:
+        return max(1, cuota // periodo), "cgroup v1"
+    return None
 
 
 def _memoria_mb() -> tuple[int, int, str]:

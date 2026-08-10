@@ -26,6 +26,17 @@ Cuatro decisiones que vienen de eso:
    puro y el GIL lo serializaría: van procesos. Leer de once bases de datos es
    esperar a la red: van hilos, que no pagan el coste de arrancar un intérprete.
 
+5. **La cola no es solo FIFO: admite prioridad.** Cuando se recalcula una unidad
+   de negocio entera, el analista está esperando por unos pocos alimentadores
+   —el de la campaña en curso, el de la PNT más alta— y los resultados van
+   saliendo según terminan. Que esos salgan al final por haber entrado al final
+   de la lista es tiempo perdido de una persona.
+
+6. **Se reintenta lo transitorio, nunca lo corrupto.** Un corte de red en una de
+   once bases pierde la unidad de negocio entera por algo que se arregla solo en
+   dos segundos. Pero reintentar un alimentador con datos malos solo consume el
+   lote dos veces, así que esos no se reintentan.
+
 Las funciones que se ejecutan en procesos deben ser **importables por nombre**
 (definidas al nivel del módulo, no closures ni lambdas): es como
 `ProcessPoolExecutor` las envía al trabajador.
@@ -33,9 +44,11 @@ Las funciones que se ejecutan en procesos deben ser **importables por nombre**
 
 from __future__ import annotations
 
+import errno
+import heapq
 import os
 import time
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from typing import Any
@@ -55,10 +68,130 @@ class ResultadoTarea:
     error: str = ""
     segundos: float = 0.0
     espera_s: float = 0.0            # cuánto estuvo en cola antes de arrancar
+    intentos: int = 1                # 1 = salió al primer intento
+    transitorio: bool = False        # ¿el fallo era de red/sesión, no de datos?
 
     @property
     def fallo(self) -> bool:
         return not self.ok
+
+
+# --------------------------------------------------------------------------- #
+# Qué se reintenta y qué no
+# --------------------------------------------------------------------------- #
+# Errores del sistema de ficheros que **no** mejoran por reintentar: si la
+# geodatabase no está o no hay permiso, estará igual de ausente dentro de dos
+# segundos. Son subclases de OSError, así que hay que excluirlas a mano.
+_PERMANENTES = (FileNotFoundError, PermissionError, IsADirectoryError,
+                NotADirectoryError, FileExistsError)
+
+# Nombres de clase de los conectores de base de datos. Se comparan por nombre
+# porque importar cx_Oracle o psycopg aquí obligaría a instalarlos para poder
+# clasificar un error — y el conector que falla vive en el proceso hijo.
+# `DatabaseError` queda fuera a propósito: en Oracle cubre también «la tabla no
+# existe», que reintentar no arregla.
+_NOMBRES_TRANSITORIOS = frozenset({
+    "OperationalError",      # sesión caída, base ocupada, listener sin atender
+    "InterfaceError",        # conexión perdida a media consulta
+    "PoolError", "PoolTimeout", "OperationalTimeout",
+})
+
+# Errores de red que sí se resuelven solos: el cable, el cortafuegos que reinicia,
+# la base que se está recuperando.
+_ERRNOS_TRANSITORIOS = frozenset({
+    errno.ECONNRESET, errno.ECONNREFUSED, errno.ECONNABORTED, errno.EPIPE,
+    errno.ETIMEDOUT, errno.EHOSTUNREACH, errno.ENETUNREACH, errno.ENETDOWN,
+    errno.EAGAIN, errno.EBUSY,
+})
+
+
+def es_transitorio(exc: BaseException) -> bool:
+    """¿Merece la pena volver a intentarlo?
+
+    La distinción es la que separa recuperar una unidad de negocio de gastar el
+    doble de tiempo para fallar igual. Ante la duda se responde que **no**: un
+    reintento de más cuesta el lote dos veces; un reintento de menos cuesta una
+    lectura que se puede repetir a mano.
+    """
+
+    if isinstance(exc, _PERMANENTES):
+        return False
+    if isinstance(exc, (ConnectionError, TimeoutError, BrokenPipeError)):
+        return True
+    if isinstance(exc, OSError) and exc.errno in _ERRNOS_TRANSITORIOS:
+        return True
+    return type(exc).__name__ in _NOMBRES_TRANSITORIOS
+
+
+# Cuántas tareas se mantienen a la vista para elegir la más prioritaria.
+#
+# Lo que la cola guarda es la **clave y los argumentos** —un código de
+# alimentador y una ruta de YAML—, jamás el modelo de red: eso es precisamente lo
+# que este módulo no envía a los trabajadores. Mil de esos pares son unos cientos
+# de kilobytes, así que la ventana puede ser holgada y cubrir de sobra cualquier
+# lote real; el tope existe para que una fuente infinita no llene la memoria de
+# argumentos pendientes.
+_VENTANA_PRIORIDAD = 1024
+
+
+class _ColaAdmision:
+    """Va sirviendo tareas por prioridad sin materializar la fuente entera.
+
+    Se ordena dentro de una **ventana de admisión**: se mantienen ``ventana``
+    tareas a la vista y se sirve la de mayor prioridad de entre ellas. Con
+    ``ventana=0`` se ordena globalmente, a cambio de agotar la fuente antes de
+    empezar.
+
+    El compromiso solo se nota con una fuente perezosa más larga que la ventana:
+    ahí una tarea urgente que aparezca en la posición 5 000 no puede adelantar a
+    las 1 000 primeras, porque todavía no se la ha visto. Para lotes normales
+    —una unidad de negocio son cientos de alimentadores, no miles— el orden es el
+    global.
+    """
+
+    def __init__(self, tareas: Iterable, ventana: int):
+        self._fuente = iter(tareas)
+        self._ventana = max(0, ventana)
+        self._monton: list[tuple[int, int, str, tuple]] = []
+        self._orden = 0
+        self._agotada = False
+
+    def _rellenar(self) -> None:
+        while not self._agotada and (self._ventana == 0
+                                     or len(self._monton) < self._ventana):
+            try:
+                clave, args, prioridad = _desempaquetar(next(self._fuente))
+            except StopIteration:
+                self._agotada = True
+                break
+            # Prioridad negada porque heapq es un montón de mínimos; `_orden`
+            # desempata en FIFO, que es lo que espera quien no usa prioridades:
+            # sin él, dos tareas de igual prioridad saldrían en orden arbitrario.
+            heapq.heappush(self._monton, (-prioridad, self._orden, clave, args))
+            self._orden += 1
+
+    def siguiente(self) -> tuple[str, tuple]:
+        """La siguiente tarea, o ``StopIteration`` si ya no queda ninguna."""
+
+        self._rellenar()
+        if not self._monton:
+            raise StopIteration
+        _, _, clave, args = heapq.heappop(self._monton)
+        return clave, args
+
+
+def _desempaquetar(item) -> tuple[str, tuple, int]:
+    """Acepta ``(clave, args)`` y ``(clave, args, prioridad)``.
+
+    Sin prioridad se asume 0, con lo que el comportamiento de quien no la use es
+    exactamente el de antes: FIFO.
+    """
+
+    if len(item) == 3:
+        clave, args, prioridad = item
+        return clave, args, int(prioridad)
+    clave, args = item
+    return clave, args, 0
 
 
 @dataclass
@@ -69,6 +202,7 @@ class ResultadoLote:
     presupuesto: Presupuesto | None = None
     segundos: float = 0.0
     esperas_por_memoria: int = 0
+    reintentos: int = 0              # cuántas veces se reintentó algo pasajero
 
     @property
     def ok(self) -> list[ResultadoTarea]:
@@ -90,7 +224,18 @@ class ResultadoLote:
             "trabajadores": self.presupuesto.trabajadores if self.presupuesto else 1,
             "limitado_por": self.presupuesto.limitado_por if self.presupuesto else "-",
             "esperas_por_memoria": self.esperas_por_memoria,
+            "reintentos": self.reintentos,
         }
+
+    @property
+    def recuperados(self) -> list[ResultadoTarea]:
+        """Las que salieron bien pero no a la primera.
+
+        Se listan aparte porque son la señal de que una base o un enlace está
+        inestable: el lote termina en verde y el problema queda invisible.
+        """
+
+        return [r for r in self.resultados if r.ok and r.intentos > 1]
 
     def informe(self) -> str:
         r = self.resumen()
@@ -98,6 +243,9 @@ class ResultadoLote:
                 f"{r['trabajadores']} trabajador(es) (limita: {r['limitado_por']})")
         if r["esperas_por_memoria"]:
             base += f" · {r['esperas_por_memoria']} espera(s) por memoria"
+        if r["reintentos"]:
+            base += (f" · {r['reintentos']} reintento(s) por fallos pasajeros"
+                     f" ({len(self.recuperados)} recuperada/s)")
         if self.fallidos:
             base += "\nFallaron:\n" + "\n".join(
                 f"  · {f.clave}: {f.error}" for f in self.fallidos[:10])
@@ -129,6 +277,9 @@ class EjecutorTareas:
         espera_memoria_s: float = 2.0,
         espera_maxima_s: float = 300.0,
         nombre: str = "lote",
+        ventana_prioridad: int | None = None,
+        reintentos: int = 0,
+        espera_reintento_s: float = 2.0,
     ):
         self.presupuesto = presupuesto or calcular_presupuesto()
         self.tipo = tipo
@@ -137,6 +288,11 @@ class EjecutorTareas:
         self.espera_memoria_s = espera_memoria_s
         self.espera_maxima_s = espera_maxima_s
         self.nombre = nombre
+        self.reintentos = max(0, reintentos)
+        self.espera_reintento_s = espera_reintento_s
+        # Cuántas tareas se miran a la vez para elegir la más prioritaria.
+        self.ventana_prioridad = (_VENTANA_PRIORIDAD if ventana_prioridad is None
+                                  else max(0, ventana_prioridad))
 
     @classmethod
     def desde_config(cls, cfg, *, tipo: str = "cpu", nombre: str = "lote",
@@ -167,6 +323,12 @@ class EjecutorTareas:
                    max_en_cola=cfg.max_en_cola,
                    reserva_memoria_mb=cfg.ram_reservada_mb // 2,
                    espera_maxima_s=cfg.espera_maxima_s,
+                   ventana_prioridad=cfg.ventana_prioridad or None,
+                   # Solo la lectura de bases reintenta por defecto: ahí el fallo
+                   # típico es la red. En cálculo, un fallo es casi siempre el
+                   # dato, y repetirlo gasta el lote dos veces para nada.
+                   reintentos=cfg.reintentos_lectura if tipo == "io" else 0,
+                   espera_reintento_s=cfg.espera_reintento_s,
                    nombre=nombre)
 
     # -- ejecución ---------------------------------------------------------
@@ -179,6 +341,9 @@ class EjecutorTareas:
     ) -> ResultadoLote:
         """Ejecuta ``funcion(*args)`` por cada tarea, respetando el presupuesto.
 
+        Cada tarea es ``(clave, argumentos)`` o ``(clave, argumentos, prioridad)``.
+        A mayor prioridad, antes se atiende; sin prioridad, FIFO como siempre.
+
         ``al_terminar`` se llama en el hilo principal según van llegando
         resultados: sirve para mostrar progreso sin esperar al lote completo, que
         en un recálculo de una unidad de negocio son minutos.
@@ -187,23 +352,55 @@ class EjecutorTareas:
         n = self.presupuesto.trabajadores
         inicio = time.monotonic()
         lote = ResultadoLote(presupuesto=self.presupuesto)
-        pendientes: Iterator[tuple[str, tuple]] = iter(tareas)
+        cola = _ColaAdmision(tareas, self.ventana_prioridad)
+        # (cuándo toca, orden, clave, args, intentos ya gastados)
+        aplazadas: list[tuple[float, int, str, tuple, int]] = []
+        contador = 0
 
         logger.info("{}: {}", self.nombre, self.presupuesto.explicacion())
+
+        def _asentar(r: ResultadoTarea, args: tuple) -> None:
+            """Da el resultado por definitivo, o lo devuelve a la cola."""
+
+            nonlocal contador
+            if self._reintentable(r):
+                demora = self.espera_reintento_s * (2 ** (r.intentos - 1))
+                logger.info("{}: '{}' falló por algo pasajero ({}); reintento "
+                            "{} de {} en {:.1f} s", self.nombre, r.clave,
+                            r.error, r.intentos, self.reintentos, demora)
+                heapq.heappush(aplazadas, (time.monotonic() + demora, contador,
+                                           r.clave, args, r.intentos))
+                contador += 1
+                lote.reintentos += 1
+                return
+            lote.resultados.append(r)
+            if al_terminar:
+                al_terminar(r)
 
         if n <= 1:
             # Sin paralelismo no se paga el coste de arrancar procesos ni de
             # serializar argumentos, que en un lote pequeño domina el tiempo.
-            for clave, args in pendientes:
+            while True:
+                ahora = time.monotonic()
+                if aplazadas and aplazadas[0][0] <= ahora:
+                    _, _, clave, args, gastados = heapq.heappop(aplazadas)
+                else:
+                    try:
+                        clave, args = cola.siguiente()
+                    except StopIteration:
+                        if not aplazadas:
+                            break
+                        # Solo quedan reintentos y aún no toca ninguno.
+                        time.sleep(max(0.0, min(aplazadas[0][0] - ahora, 0.5)))
+                        continue
+                    gastados = 0
                 # La espera se mide igual que en la ruta paralela: en secuencial
                 # la tarea número 40 espera a las 39 anteriores, y esa espera es
                 # justamente el argumento para pedir más máquina.
                 espera = time.monotonic() - inicio
-                r = _ejecutar_una(funcion, clave, args)
+                r = _ejecutar_una(funcion, clave, args, gastados + 1)
                 r.espera_s = round(espera, 3)
-                lote.resultados.append(r)
-                if al_terminar:
-                    al_terminar(r)
+                _asentar(r, args)
             lote.segundos = time.monotonic() - inicio
             return lote
 
@@ -214,44 +411,67 @@ class EjecutorTareas:
         entorno = _entorno_hijo() if self.tipo == "cpu" else None
 
         with fabrica(max_workers=n, **(entorno or {})) as pool:
-            vivos: dict[Future, tuple[str, float]] = {}
+            vivos: dict[Future, tuple[str, tuple, float]] = {}
 
             def _lanzar() -> bool:
-                """Toma la siguiente de la cola si hay hueco y memoria."""
-                try:
-                    clave, args = next(pendientes)
-                except StopIteration:
-                    return False
+                """Toma la siguiente —reintento vencido o tarea nueva— si cabe."""
+
+                ahora = time.monotonic()
+                if aplazadas and aplazadas[0][0] <= ahora:
+                    # Los reintentos vencidos se adelantan: esa lectura ya tiene
+                    # a alguien esperándola desde hace rato.
+                    _, _, clave, args, gastados = heapq.heappop(aplazadas)
+                else:
+                    try:
+                        clave, args = cola.siguiente()
+                    except StopIteration:
+                        return False
+                    gastados = 0
                 self._esperar_memoria(lote, clave)
-                fut = pool.submit(_ejecutar_una, funcion, clave, args)
+                fut = pool.submit(_ejecutar_una, funcion, clave, args,
+                                  gastados + 1)
                 # Cuánto esperó esta tarea desde que arrancó el lote hasta que
                 # hubo un hueco libre: es la métrica que dice si el equipo se
                 # quedó corto, y la que justifica pedir más máquina.
-                vivos[fut] = (clave, time.monotonic() - inicio)
+                vivos[fut] = (clave, args, time.monotonic() - inicio)
                 return True
 
             while len(vivos) < n and _lanzar():
                 pass
 
-            while vivos:
+            while vivos or aplazadas:
+                if not vivos:
+                    # Nada en vuelo y solo quedan reintentos por vencer.
+                    time.sleep(max(0.0, min(aplazadas[0][0] - time.monotonic(),
+                                            0.5)))
+                    _lanzar()
+                    continue
+
                 hechos, _ = wait(list(vivos), return_when=FIRST_COMPLETED)
                 for fut in hechos:
-                    clave, espera = vivos.pop(fut)
+                    clave, args, espera = vivos.pop(fut)
                     try:
                         r = fut.result()
                     except Exception as exc:                      # noqa: BLE001
                         # Un proceso muerto (por memoria, por ejemplo) no entrega
-                        # ResultadoTarea: llega como excepción del futuro.
+                        # ResultadoTarea: llega como excepción del futuro. No se
+                        # reintenta: si el pool se rompió, reenviar solo produce
+                        # el mismo error tantas veces como tareas queden.
                         r = ResultadoTarea(clave=clave, ok=False,
                                            error=f"{type(exc).__name__}: {exc}")
                     r.espera_s = round(max(0.0, espera), 3)
-                    lote.resultados.append(r)
-                    if al_terminar:
-                        al_terminar(r)
-                    _lanzar()
+                    _asentar(r, args)
+                while len(vivos) < n and _lanzar():
+                    pass
 
         lote.segundos = time.monotonic() - inicio
         return lote
+
+    def _reintentable(self, r: ResultadoTarea) -> bool:
+        """Solo lo pasajero, y solo mientras queden intentos."""
+
+        return (r.fallo and r.transitorio and self.reintentos > 0
+                and r.intentos <= self.reintentos)
 
     def _esperar_memoria(self, lote: ResultadoLote, clave: str) -> None:
         """Retiene la tarea mientras no haya margen de memoria.
@@ -280,22 +500,26 @@ class EjecutorTareas:
             time.sleep(self.espera_memoria_s)
 
 
-def _ejecutar_una(funcion: Callable[..., Any], clave: str,
-                  args: tuple) -> ResultadoTarea:
+def _ejecutar_una(funcion: Callable[..., Any], clave: str, args: tuple,
+                  intento: int = 1) -> ResultadoTarea:
     """Envoltorio que corre en el trabajador y **nunca** propaga la excepción.
 
     Que un alimentador con datos corruptos cancele el lote entero significaría
     perder el cálculo de los otros 499. El error viaja como dato.
+
+    La excepción se clasifica **aquí**, donde todavía es un objeto: al padre solo
+    llega el texto, y decidir por el texto si merece reintento sería adivinar.
     """
 
     t0 = time.monotonic()
     try:
         valor = funcion(*args)
-        return ResultadoTarea(clave=clave, ok=True, valor=valor,
+        return ResultadoTarea(clave=clave, ok=True, valor=valor, intentos=intento,
                               segundos=round(time.monotonic() - t0, 3))
     except Exception as exc:                                      # noqa: BLE001
         return ResultadoTarea(
             clave=clave, ok=False, error=f"{type(exc).__name__}: {exc}",
+            intentos=intento, transitorio=es_transitorio(exc),
             segundos=round(time.monotonic() - t0, 3))
 
 

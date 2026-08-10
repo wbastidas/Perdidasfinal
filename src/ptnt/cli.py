@@ -1182,6 +1182,7 @@ def recursos(
     en vez de adivinarlo.
     """
 
+    from ptnt.runtime.pool import _VENTANA_PRIORIDAD
     from ptnt.runtime.resources import Recursos, calcular_presupuesto
 
     cfg = _cargar(config)
@@ -1193,6 +1194,14 @@ def recursos(
         tabla.add_row(k.replace("_", " ").capitalize(),
                       f"{v:,}" if isinstance(v, int) else str(v))
     console.print(tabla)
+
+    if r.en_contenedor:
+        # Sin decirlo, quien vea 2 GB en un servidor de 64 creerá que la
+        # plataforma mide mal y subirá los límites a mano hasta que el núcleo
+        # mate el contenedor.
+        console.print(f"  [yellow]Se está dentro de un contenedor[/] "
+                      f"({r.contenedor}): manda su límite, no lo que tenga el "
+                      f"anfitrión.")
 
     if medir:
         pico = _medir_coste_alimentador()
@@ -1244,6 +1253,15 @@ def recursos(
                   "responde 503 con [cyan]Retry-After[/], que la app reintenta "
                   "sola. El paquete de retorno se guarda igual: el trabajo del "
                   "día no se pierde por una cola llena.")
+
+    console.print(
+        f"\n[bold]Cola de trabajo:[/] las tareas con prioridad más alta se "
+        f"atienden antes (ventana de "
+        f"{rec.ventana_prioridad or _VENTANA_PRIORIDAD:,} tareas). "
+        f"Una lectura que falle por algo pasajero —red, sesión caída— se "
+        f"reintenta {rec.reintentos_lectura} vez/veces con espera creciente; "
+        f"un fallo de datos no se reintenta, porque gastaría el lote dos veces "
+        f"para fallar igual.")
 
 
 def _medir_coste_alimentador() -> int:

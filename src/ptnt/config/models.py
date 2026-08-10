@@ -376,6 +376,20 @@ class RecursosConfig(_Strict):
     # Cuánto espera una tarea a que se libere memoria antes de arrancar igual.
     espera_maxima_s: float = Field(30.0, gt=0.0)
 
+    # Cuántas tareas se miran a la vez para elegir la más prioritaria. Ordenar
+    # globalmente exigiría traerse los 5 000 alimentadores a memoria antes de
+    # calcular nada, que es justo lo que se evita. 0 = automático (unas pocas
+    # rondas de trabajadores), que basta para que lo urgente no espere detrás de
+    # lo rutinario.
+    ventana_prioridad: int = Field(0, ge=0)
+
+    # Reintentos de una lectura que falla por algo pasajero: la red, la sesión
+    # caída, la base ocupada. Un corte de dos segundos en una de once bases no
+    # puede costar la unidad de negocio entera. Los fallos de datos NO se
+    # reintentan: repetirlos gasta el lote dos veces para fallar igual.
+    reintentos_lectura: int = Field(2, ge=0, le=10)
+    espera_reintento_s: float = Field(2.0, gt=0.0)
+
     # --- concurrencia de la API móvil ---
     descargas_simultaneas: int = Field(4, ge=1)
     # Menos que descargas a propósito: abrir y recorrer un GeoPackage de retorno

@@ -266,7 +266,7 @@ dominio), el **módulo** que lo implementa y la **prueba** que lo verifica.
 
 | ID | Requerimiento | Módulo |
 |---|---|---|
-| RF-190 | **Detección automática** de núcleos y memoria disponibles, respetando contenedores | `runtime/resources.py` |
+| RF-190 | **Detección automática** de núcleos y memoria disponibles | `runtime/resources.py` |
 | RF-191 | El paralelismo se acota por **memoria**, no solo por núcleos | `runtime/resources.py` |
 | RF-192 | Reserva de memoria que la plataforma **nunca** usa (SO, base, API móvil) | `runtime/resources.py` |
 | RF-193 | Procesamiento de **varios alimentadores en paralelo**, con cola de espera para el resto | `runtime/pool.py` |
@@ -276,6 +276,10 @@ dominio), el **módulo** que lo implementa y la **prueba** que lo verifica.
 | RF-197 | **Control de admisión** de la API móvil: descargas, subidas y consultas con límites separados | `runtime/gate.py` |
 | RF-198 | Saturación → **503 con `Retry-After`** escalado; el paquete de retorno se guarda igual | `field/api.py` |
 | RF-199 | **Métricas de carga** expuestas: en curso, en cola, picos, esperas y rechazos | `field/api.py` |
+| RF-190b | **Límites del contenedor respetados** (cgroup v1/v2): tope de memoria y cuota de CPU, que ni `/proc/meminfo` ni `sched_getaffinity` ven | `runtime/resources.py` |
+| RF-193b | **Prioridad en la cola**: lo urgente se adelanta a lo rutinario sin materializar la fuente | `runtime/pool.py` |
+| RF-195b | **Reintento de fallos pasajeros** (red, sesión caída, timeout) con espera creciente; los fallos de datos **no** se reintentan | `runtime/pool.py` |
+| RF-196b | Las fuentes que **solo respondieron tras reintentar** se reportan aunque el lote acabe en verde | `runtime/batch.py` |
 
 ## 2.12b Trabajo de campo y aplicación móvil
 
@@ -835,6 +839,11 @@ Lo que el sistema **no** hace, dicho explícitamente para que nadie lo suponga:
    archivo se transfiere aparte cuando el caso llega a proceso administrativo.
 9. **La aplicación no rastrea el recorrido del técnico.** Es una decisión
    laboral, no técnica, y no corresponde a esta herramienta.
+10. **No hay reparto entre varias máquinas.** El diseño es de servidor único, y
+    escalar a un clúster exigiría cola distribuida y almacenamiento compartido:
+    otra arquitectura, no un parámetro. El resto de los límites del ejecutor
+    —hasta dónde llega la prioridad, qué no se reintenta— están en
+    [Recursos](RECURSOS.md) §6.
 
 ---
 

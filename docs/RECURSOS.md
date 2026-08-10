@@ -46,7 +46,7 @@ sin poder descargar su trabajo.
 
 ### Detección
 
-Sin dependencias externas y respetando contenedores:
+Sin dependencias externas:
 
 | | |
 |---|---|
@@ -56,6 +56,48 @@ Sin dependencias externas y respetando contenedores:
 
 Se usa `MemAvailable` y no `MemFree`: la segunda se queda corta porque ignora la
 caché reclamable, y dejaría el servidor trabajando a un tercio de su capacidad.
+
+### Dentro de un contenedor manda el contenedor
+
+Ni `psutil` ni `/proc/meminfo` ven el cgroup: dentro de un contenedor con
+`--memory=2g` **los dos siguen mostrando la memoria del anfitrión**. La
+plataforma creería tener 64 GB, lanzaría treinta alimentadores y el núcleo
+mataría el contenedor entero — sin mensaje de error que explique nada.
+
+Lo mismo con la CPU: `--cpus=1.5` no toca la afinidad sino la **cuota CFS**, así
+que `sched_getaffinity` no lo ve y se lanzarían tantos procesos como núcleos
+tenga el anfitrión, todos estrangulados por el planificador.
+
+Por eso se leen los límites del cgroup —v1 y v2— y se toma **el menor de los
+dos**:
+
+| | cgroup v2 | cgroup v1 |
+|---|---|---|
+| Memoria | `memory.max`, `memory.current` | `memory/memory.limit_in_bytes`, `memory/memory.usage_in_bytes` |
+| Reclamable | `memory.stat`: `inactive_file`, `slab_reclaimable` | `memory/memory.stat`: `total_inactive_file` |
+| CPU | `cpu.max` (cuota y periodo) | `cpu/cpu.cfs_quota_us`, `cpu/cpu.cfs_period_us` |
+
+Tres detalles que deciden si el número sale bien:
+
+1. **Lo libre no es `límite − usado`.** Buena parte de lo usado es caché de
+   ficheros que el núcleo devuelve en cuanto alguien pide memoria. Restarla sin
+   más dejaría la plataforma procesando de a un alimentador después de leer un
+   GeoPackage grande.
+2. **Un cgroup más grande que el anfitrión no infla nada.** Puede declarar 1 TB
+   en un equipo de 16 GB; ahí el que manda es el anfitrión.
+3. **La cuota se redondea hacia abajo, pero nunca a cero.** Con 1,5 núcleos se
+   trabaja de a uno: dos procesos no dan 1,5 veces la velocidad, dan cambios de
+   contexto.
+
+`ptnt recursos` lo dice cuando pasa:
+
+```
+Se está dentro de un contenedor (cgroup v2): manda su límite, no lo que tenga
+el anfitrión.
+```
+
+Sin ese aviso, quien vea 2 GB en un servidor de 64 pensará que la plataforma
+mide mal y subirá los límites a mano hasta que el núcleo mate el contenedor.
 
 ---
 
@@ -95,6 +137,69 @@ Cuatro decisiones que gobiernan el ejecutor:
 Y un detalle que en la práctica decide el rendimiento: cada proceso hijo arranca
 con **un hilo de BLAS**. N procesos × N hilos de OpenBLAS es sobresuscripción, y
 el equipo se pasa el tiempo cambiando de contexto en vez de calculando.
+
+### La cola no es solo FIFO: lo urgente se adelanta
+
+En un recálculo de una unidad de negocio entera el analista no está esperando los
+400 alimentadores: está esperando **unos pocos** —el de la campaña de campo en
+curso, el de la PNT más alta—. Y como los resultados se entregan según terminan,
+el orden de la cola es literalmente el tiempo de esa persona.
+
+```python
+TareaAlimentador(feeder_code="GYE-04", ruta_config="config/base.yaml",
+                 prioridad=10)      # a mayor número, antes se atiende
+```
+
+200 tareas rutinarias más una urgente **entrada la última**:
+
+| | Sale en la posición |
+|---|---:|
+| Sin prioridad (FIFO) | 201 |
+| Con prioridad | **1** |
+
+Quien no use prioridades no nota nada: sin prioridad declarada todas valen 0 y el
+desempate es el orden de llegada, es decir, FIFO exacto.
+
+**Dónde está el límite.** Ordenar globalmente exigiría agotar la fuente antes de
+empezar, y con una fuente perezosa de 5 000 alimentadores eso es materializarla
+entera. Así que se ordena dentro de una **ventana de admisión** de 1 024 tareas:
+lo que la cola guarda es la clave y los argumentos —un código de alimentador y
+una ruta de YAML, jamás el modelo de red—, y mil de esos pares son unos cientos
+de kilobytes. Para cualquier lote real el orden es el global; solo con una fuente
+perezosa más larga que la ventana una tarea urgente en la posición 5 000 no puede
+adelantar a las 1 000 primeras, porque todavía no se la ha visto.
+
+### Se reintenta lo pasajero, nunca lo corrupto
+
+Un corte de red de dos segundos en **una** de once bases no puede costar la
+ingesta entera de esa unidad de negocio. Pero reintentar un alimentador con datos
+malos solo consume el lote dos veces para fallar igual.
+
+| Se reintenta | No se reintenta |
+|---|---|
+| `ConnectionError`, `TimeoutError`, `BrokenPipeError` | `ValueError`, `KeyError` — el dato está mal |
+| `OSError` con `ECONNRESET`, `ETIMEDOUT`, `EHOSTUNREACH`… | `FileNotFoundError`, `PermissionError` — la `.gdb` seguirá ausente dentro de dos segundos |
+| `OperationalError`, `InterfaceError` de los conectores | `DatabaseError`: en Oracle cubre «la tabla no existe» |
+
+La clasificación se hace **en el trabajador**, donde la excepción todavía es un
+objeto: al proceso padre solo llega el texto, y decidir por el texto si merece
+reintento sería adivinar. Los conectores se reconocen por nombre de clase porque
+importar `cx_Oracle` para clasificar su error obligaría a instalarlo solo para
+eso, y el que falla vive en el proceso hijo.
+
+La espera entre reintentos se duplica (2 s, 4 s, 8 s): volver de inmediato contra
+una base que se está recuperando es lo que impide que se recupere. Y un reintento
+vencido **se adelanta** en la cola: esa lectura ya tiene a alguien esperándola.
+
+Lo que sale bien pero no a la primera se reporta aparte:
+
+```
+lecturas: 2 fuente(s) solo respondieron tras reintentar (UN-02, UN-07).
+Revise el enlace antes de que deje de responder del todo.
+```
+
+Sin ese aviso el lote termina en verde y el enlace inestable queda invisible
+hasta la mañana en que ya no responde.
 
 ---
 
@@ -204,6 +309,10 @@ recursos:
   coste_mb_por_tarea: 512     # MÍDALO, no lo adivine
   espera_maxima_s: 30.0
 
+  ventana_prioridad: 0        # 0 = automático (1024)
+  reintentos_lectura: 2       # solo fallos pasajeros
+  espera_reintento_s: 2.0     # y se duplica en cada reintento
+
   descargas_simultaneas: 4
   subidas_simultaneas: 2
   max_en_cola_api: 32
@@ -233,13 +342,18 @@ Dicho explícitamente para que nadie lo suponga:
 1. **No hay reparto entre varias máquinas.** El diseño es de servidor único, como
    pide la especificación. Escalar a un clúster exigiría una cola distribuida y
    almacenamiento compartido — otra arquitectura, no un parámetro.
-2. **No hay prioridades entre tareas.** La cola es FIFO. Si hiciera falta que un
-   alimentador crítico se adelante, es un cambio pequeño pero no está hecho.
-3. **La medición de memoria es del proceso, no del contenedor.** En un contenedor
-   con `--memory`, `/proc/meminfo` sigue mostrando la del anfitrión. Con `psutil`
-   instalado tampoco lo resuelve; ahí hay que fijar `max_trabajadores` a mano.
-4. **No se reintenta automáticamente una tarea fallida.** Se reporta y se sigue:
-   reintentar un alimentador con datos corruptos solo consume el lote dos veces.
+2. **La prioridad ordena dentro de una ventana, no globalmente.** Con una fuente
+   perezosa más larga que 1 024 tareas, lo urgente que aún no se ha leído no
+   puede adelantar a lo que ya está en la ventana. Para lotes reales —una unidad
+   de negocio son cientos de alimentadores— el orden es el global.
+3. **No se reintenta lo que falla por los datos**, y es deliberado: repetir un
+   alimentador con el padrón mal formado gasta el lote dos veces para fallar
+   igual. Solo se reintenta lo pasajero.
+4. **Un proceso muerto por memoria no se reintenta.** Llega como excepción del
+   futuro, no como resultado clasificable, y si el pool se rompió reenviar solo
+   reproduce el mismo error tantas veces como tareas queden.
+5. **En Windows y macOS no hay cgroups que leer.** El ajuste al contenedor es de
+   Linux; en los demás se usa lo que reporte el sistema operativo.
 
 ---
 

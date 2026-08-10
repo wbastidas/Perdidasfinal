@@ -343,7 +343,8 @@ flujo:
 # Ver cuánto cabe en este equipo:  ptnt recursos
 # Medir el coste real:             ptnt recursos --medir
 recursos:
-  # Vacío = todos los núcleos utilizables (respetando cpuset en contenedores).
+  # Vacío = todos los núcleos utilizables. Se respetan los límites del
+  # contenedor: cpuset, cuota CFS (`--cpus`) y tope de memoria (`--memory`).
   cpus: null
   # Tope absoluto por encima de lo que diga el cálculo. 0 = sin tope.
   max_trabajadores: 0
@@ -359,6 +360,18 @@ recursos:
 
   max_en_cola: 0          # 0 = sin tope; se procesa todo, por lotes
   espera_maxima_s: 30.0   # cuánto espera una tarea a que se libere memoria
+
+  # Cuántas tareas se miran a la vez para elegir la más prioritaria. 0 =
+  # automático (1024), que cubre de sobra cualquier lote real: la cola guarda
+  # códigos y rutas, no modelos de red.
+  ventana_prioridad: 0
+
+  # Un corte de red en una de once bases no puede costar la unidad de negocio
+  # entera. Solo se reintenta lo pasajero (sesión caída, base ocupada, timeout);
+  # un fallo de datos no se reintenta, gastaría el lote dos veces para fallar
+  # igual.
+  reintentos_lectura: 2
+  espera_reintento_s: 2.0
 
   # --- concurrencia de la API móvil ---
   # Lo que no cabe espera en cola; si la cola se llena, 503 + Retry-After.

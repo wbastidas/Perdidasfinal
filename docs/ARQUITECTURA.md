@@ -195,6 +195,27 @@ Se reserva memoria que la plataforma **nunca** toca (sistema operativo, base de
 datos y la API móvil): sin ella, un recálculo pesado deja a las cuadrillas sin
 poder descargar su trabajo.
 
+El módulo `runtime/` es toda esa capa, y está separado del cálculo a propósito:
+quién decide *cuántos* alimentadores se procesan a la vez no debería estar dentro
+del código que resuelve *un* alimentador.
+
+| Módulo | Responsabilidad |
+|---|---|
+| `runtime/resources.py` | Qué hay: núcleos, memoria y los **límites del contenedor** (cgroup v1/v2), que ni `/proc/meminfo` ni `sched_getaffinity` ven |
+| `runtime/pool.py` | Cuántas tareas a la vez, cola con **prioridad**, aislamiento de fallos y **reintento de lo pasajero** |
+| `runtime/gate.py` | Control de admisión de la API móvil: porteros separados, cola con tope y 503 con `Retry-After` |
+| `runtime/batch.py` | Los tres lotes reales: alimentadores, bases de origen y paquetes de campo |
+
+Dos decisiones que atraviesan la capa entera:
+
+- **Al trabajador se le manda dónde buscar, no lo que hay que calcular.** Se le
+  pasa un código de alimentador y una ruta de YAML, nunca la red: serializar
+  200 000 nodos cuesta más que calcularlos y duplica la memoria que se intentaba
+  repartir.
+- **El fallo es un dato, no una excepción suelta.** Vuelve clasificado desde el
+  trabajador —pasajero o no— y solo por eso el padre puede decidir si reintentar
+  sin adivinar por el texto del error.
+
 Detalle, mediciones y límites en [RECURSOS.md](RECURSOS.md).
 
 ## 10. Ciclo de campo

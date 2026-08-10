@@ -44,6 +44,11 @@ class TareaAlimentador:
     head_energy_kwh: float | None = None
     trifasico: bool = True
     opciones: dict[str, Any] = field(default_factory=dict)
+    # A mayor número, antes se atiende. Sirve para que el alimentador con una
+    # campaña de campo en curso, o el de mayor PNT, salga primero: los resultados
+    # se van entregando según terminan y hay alguien esperando por esos, no por
+    # los 400 rutinarios.
+    prioridad: int = 0
 
     def argumentos(self) -> tuple:
         return (self.feeder_code, self.ruta_config, self.head_energy_kwh,
@@ -66,7 +71,7 @@ def analizar_alimentadores(
 
     ejecutor = EjecutorTareas.desde_config(cfg.recursos, tipo="cpu",
                                            nombre="alimentadores")
-    trabajo = ((t.feeder_code, t.argumentos()) for t in tareas)
+    trabajo = ((t.feeder_code, t.argumentos(), t.prioridad) for t in tareas)
     return ejecutor.ejecutar(funcion or _analizar_uno, trabajo,
                              al_terminar=al_terminar)
 
@@ -117,6 +122,7 @@ class TareaLectura:
     consulta: str = ""
     ruta_config: str = ""
     opciones: dict[str, Any] = field(default_factory=dict)
+    prioridad: int = 0               # a mayor número, antes se lee
 
 
 class LimitadorPorFuente:
@@ -161,9 +167,19 @@ def leer_fuentes(
     ejecutor = EjecutorTareas.desde_config(cfg.recursos, tipo="io",
                                            nombre="lecturas")
     trabajo = ((t.clave, (t.clave, t.fuente, t.consulta,
-                          t.ruta_config or "", t.opciones)) for t in tareas)
-    return ejecutor.ejecutar(funcion or _leer_una, trabajo,
+                          t.ruta_config or "", t.opciones), t.prioridad)
+               for t in tareas)
+    lote = ejecutor.ejecutar(funcion or _leer_una, trabajo,
                              al_terminar=al_terminar)
+    if lote.recuperados:
+        # El lote termina en verde y el enlace inestable quedaría invisible. Es
+        # la primera pista de que una unidad de negocio va a empezar a fallar.
+        logger.warning(
+            "lecturas: {} fuente(s) solo respondieron tras reintentar ({}). "
+            "Revise el enlace antes de que deje de responder del todo.",
+            len(lote.recuperados),
+            ", ".join(r.clave for r in lote.recuperados[:5]))
+    return lote
 
 
 def _leer_una(clave: str, fuente: str, consulta: str, ruta_config: str,
