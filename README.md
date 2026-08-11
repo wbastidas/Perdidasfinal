@@ -67,7 +67,14 @@ datos de la red (esquema **Puesto → Unidad** homologado CNEL EP):
     **encola el resto**; lee las **11 unidades de negocio en paralelo** con tope
     por base; y acota descargas y subidas de las cuadrillas con cola y
     `Retry-After`, sin perder nunca el trabajo del día.
-15. **Publica los resultados en dos interfaces web**: un tablero de análisis para
+15. **Aprende con el uso**: lo que la cuadrilla encuentra en campo vuelve a la
+    base de casos confirmados —distinguiendo hurto verificado, cliente
+    verificado y limpio, y visita que no concluyó, porque **un predio cerrado no
+    es un cliente inocente**— y el detector se recalibra contra la realidad
+    local. Y cada alimentador, ramal, sector o ruta se juzga **contra los que se
+    le parecen**: un rural largo pierde más por física, y compararlo contra el
+    promedio de la empresa manda cuadrillas donde no hay nada.
+16. **Publica los resultados en dos interfaces web**: un tablero de análisis para
     escritorio (Streamlit, 9 pestañas) y un visor de solo lectura (FastAPI).
 
 > **[Especificación completa](docs/ESPECIFICACION_COMPLETA.md)** — requerimientos,
@@ -82,6 +89,7 @@ datos de la red (esquema **Puesto → Unidad** homologado CNEL EP):
 > **[Probar la app de campo desde Windows](docs/PRUEBAS_CAMPO_WINDOWS.md)** ·
 > **[El ciclo completo](docs/CICLO_COMPLETO.md)** ·
 > **[Recursos y paralelismo](docs/RECURSOS.md)** ·
+> **[Aprendizaje continuo](docs/APRENDIZAJE.md)** ·
 > [Focalización de levantamientos](docs/FOCALIZACION.md) ·
 > [Diagnóstico y validación](docs/DIAGNOSTICO.md) ·
 > [Proceso](docs/PROCESO.md) · [Seguridad](docs/SEGURIDAD.md) ·
@@ -184,6 +192,8 @@ ptnt servir-visor       # visor de solo lectura  -> http://127.0.0.1:8080
 | `ptnt campo-servir` | **API de sincronización** para la aplicación móvil |
 | `ptnt campo-simular` | **Hace la jornada del técnico sin dispositivo**: edita el GeoPackage real con las mismas reglas que la app |
 | `ptnt campo-revisar` | **Revisa los cambios de campo** y determina qué recalcular |
+| `ptnt campo-aprender` | **Incorpora lo que la cuadrilla encontró** a la base de casos confirmados y contrasta el acierto del ranking |
+| `ptnt pares` | **Compara cada alimentador, ramal, sector o ruta contra los que se le parecen**, no contra el promedio de la empresa |
 
 ## Instalación por capas (extras)
 
@@ -260,7 +270,7 @@ pytest -m security      # auth, secretos, visor
 pytest --cov=ptnt       # cobertura
 ```
 
-**445 pruebas** del backend en verde. Detalle de qué cubre cada archivo y los
+**464 pruebas** del backend en verde. Detalle de qué cubre cada archivo y los
 resultados de la demostración extremo a extremo en
 [`docs/PRUEBAS.md`](docs/PRUEBAS.md).
 

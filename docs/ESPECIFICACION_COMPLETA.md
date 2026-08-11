@@ -10,7 +10,7 @@ interfaces, y la trazabilidad requerimiento → módulo → prueba.
 | Sistema | PTNT-BAL — Pérdidas No Técnicas y Balance Energético |
 | Ámbito | Distribuidora eléctrica (modelo de datos CNEL EP, esquema Puesto → Unidad) |
 | Stack | Python 3.11+, pydantic v2, pandas/numpy, DuckDB, typer, Streamlit, FastAPI |
-| Estado | 445 pruebas en verde |
+| Estado | 464 pruebas en verde |
 
 ---
 
@@ -276,6 +276,21 @@ dominio), el **módulo** que lo implementa y la **prueba** que lo verifica.
 | RF-197 | **Control de admisión** de la API móvil: descargas, subidas y consultas con límites separados | `runtime/gate.py` |
 | RF-198 | Saturación → **503 con `Retry-After`** escalado; el paquete de retorno se guarda igual | `field/api.py` |
 | RF-199 | **Métricas de carga** expuestas: en curso, en cola, picos, esperas y rechazos | `field/api.py` |
+
+## 2.12c Aprendizaje continuo
+
+| ID | Requerimiento | Módulo |
+|---|---|---|
+| RF-210 | Lo que la cuadrilla encuentra **vuelve a la base de casos confirmados**, con la fecha de la inspección | `ntl/feedback.py` |
+| RF-211 | Se distingue hurto confirmado, **cliente verificado y limpio** y visita sin concluir: un predio cerrado **no** es un negativo | `ntl/feedback.py` |
+| RF-212 | El cliente que viajó en el paquete pero **nadie visitó** no entra como dato | `ntl/feedback.py` |
+| RF-213 | El registro es **idempotente**, y el mismo cliente en dos campañas son dos datos | `ntl/feedback.py` |
+| RF-214 | **Precisión en campo** y **cobertura** se reportan por separado: los predios cerrados no hunden el indicador del ranking | `ntl/feedback.py` |
+| RF-215 | **Contraste del ranking contra visitas reales**, con aviso si no hay grupo de comparación | `ntl/feedback.py` |
+| RF-216 | Cada alimentador, ramal, sector o ruta se compara **contra los que se le parecen**, no contra el promedio | `anomalies/peer_entities.py` |
+| RF-217 | El perfil de similitud es **exógeno a la métrica evaluada**; si se contamina, se excluye **y se avisa** | `anomalies/peer_entities.py` |
+| RF-218 | Bloque por unidad de negocio: una UN con nivel alto **no puede marcar a todos sus alimentadores** | `anomalies/peer_entities.py` |
+| RF-219 | Mediana y desviación robusta, vecinos con corte de distancia y **suelo de dispersión**: sin ellos el método marca ruido y pierde lo real | `anomalies/peer_entities.py` |
 | RF-190b | **Límites del contenedor respetados** (cgroup v1/v2): tope de memoria y cuota de CPU, que ni `/proc/meminfo` ni `sched_getaffinity` ven | `runtime/resources.py` |
 | RF-193b | **Prioridad en la cola**: lo urgente se adelanta a lo rutinario sin materializar la fuente | `runtime/pool.py` |
 | RF-195b | **Reintento de fallos pasajeros** (red, sesión caída, timeout) con espera creciente; los fallos de datos **no** se reintentan | `runtime/pool.py` |
@@ -738,7 +753,7 @@ hace fallar el arranque.
 | `synth/escenario_costa.py` | 20 000 clientes | Prueba a escala, 12 alimentadores, informes PDF |
 
 ```bash
-pytest                                    # 445 pruebas
+pytest                                    # 464 pruebas
 python scripts/demo_completa.py           # análisis, 9 pasos
 python scripts/demo_ciclo_completo.py     # CICLO ENTERO, 15 etapas, 22 comprobaciones
 python scripts/demo_campo_multiusuario.py # despacho a 3 cuadrillas
@@ -762,7 +777,7 @@ termina con código de salida distinto de cero si alguna comprobación falla.
 | **Mecanismo de promedio** multi-mes | RF-10…RF-12 | ✅ |
 | Identificar clientes con **hurto** | S1–S9, RF-30…RF-32 | ✅ |
 | Arquitectura, implementación Windows, proceso | `docs/ARQUITECTURA.md`, `INSTALACION_WINDOWS.md`, `PROCESO.md` | ✅ |
-| **Documentado** + pruebas de integración y seguridad | 445 pruebas, 17 documentos | ✅ |
+| **Documentado** + pruebas de integración y seguridad | 464 pruebas, 18 documentos | ✅ |
 | **Interfaz web** para escritorio y para terceros | RF-101, RF-102 | ✅ |
 | Esquema **Puesto → Unidad** | RF-40, §3.1 | ✅ |
 | **CLIRLSCOD** como agrupador | RF-23, RF-73 | ✅ |

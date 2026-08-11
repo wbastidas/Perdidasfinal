@@ -1529,6 +1529,182 @@ def campo_paquetes(
 
 
 @app.command()
+def campo_aprender(
+    paquete: str = typer.Option(..., "--paquete",
+                                help="Paquete de retorno con las inspecciones"),
+    multados: str = typer.Option("", "--multados",
+                                 help="Base histórica de multados, para unirla"),
+    ranking: str = typer.Option("", "--ranking",
+                                help="CSV del ranking, para contrastar el acierto"),
+    config: str = _CONFIG_OPT,
+):
+    """Incorpora lo que la cuadrilla encontró a la base de casos confirmados.
+
+    Es el bucle que hace que el sistema mejore con el uso: cada campaña que
+    vuelve del campo agranda la base propia de casos verificados, y el detector
+    pasa a calibrarse contra la realidad de esta empresa en vez de contra una
+    base heredada de la que nadie sabe cómo se eligió.
+
+    Distingue tres cosas que **no** son lo mismo: hurto confirmado, cliente
+    verificado y limpio —el dato más escaso del problema— y visita que no pudo
+    concluir. Un predio cerrado no es un cliente inocente, y meterlo como tal
+    enseñaría al modelo a dejar de mirar justo donde conviene insistir.
+    """
+
+    from ptnt.field.gpkg import GeoPackage
+    from ptnt.ntl.feedback import (RegistroInspecciones, contrastar_con_ranking,
+                                   extraer_resultados, guardar_resumen)
+
+    ruta = Path(paquete)
+    if not ruta.exists():
+        console.print(f"[red]No existe el paquete:[/] {ruta}")
+        raise typer.Exit(code=2)
+
+    cfg = _cargar(config)
+    salidas = Path(cfg.rutas.salidas) / "aprendizaje"
+    with GeoPackage(ruta) as gp:
+        try:
+            clientes = pd.DataFrame(gp.leer("ptnt_cliente"))
+        except Exception:
+            clientes = pd.DataFrame()
+    resultados = extraer_resultados(clientes)
+
+    registro = RegistroInspecciones(salidas / "inspecciones.csv")
+    resumen = registro.registrar(resultados)
+    registro.guardar()
+
+    tabla = Table(title="Lo que encontró la cuadrilla")
+    tabla.add_column("Veredicto"); tabla.add_column("Visitas", justify="right")
+    tabla.add_row("Hurto confirmado", f"{resumen.confirmados:,}")
+    tabla.add_row("Verificado y limpio", f"{resumen.descartados:,}")
+    tabla.add_row("[yellow]Sin concluir[/] (cerrado / acceso negado)",
+                  f"{resumen.no_concluyentes:,}")
+    tabla.add_row("Problema de datos", f"{resumen.problemas_datos:,}")
+    console.print(tabla)
+    console.print(f"  {resumen.lectura()}")
+    for a in resumen.advertencias:
+        console.print(f"[yellow]⚠ {a}[/]")
+
+    heredados = None
+    if multados and Path(multados).exists():
+        heredados = pd.read_csv(multados, dtype={"contract_account": str})
+    base = registro.base_confirmados(incluir_heredados=heredados)
+    destino = salidas / "confirmados.csv"
+    base.to_csv(destino, index=False)
+
+    acumulado = registro.resumen_acumulado()
+    console.print(f"\n[bold]Base de casos confirmados:[/] {len(base):,} "
+                  f"({acumulado.confirmados:,} verificados en campo por esta "
+                  f"empresa) → {destino}")
+    console.print(f"  Negativos verificados: "
+                  f"{len(registro.negativos_verificados()):,} · son los únicos "
+                  "clientes de los que se sabe con certeza que están limpios.")
+
+    contraste = None
+    if ranking and Path(ranking).exists():
+        contraste = contrastar_con_ranking(
+            registro, pd.read_csv(ranking, dtype={"contract_account": str}))
+        t2 = Table(title="Lo que el ranking predijo vs. lo que el campo encontró")
+        t2.add_column("Indicador"); t2.add_column("Valor", justify="right")
+        for k, v in contraste.resumen().items():
+            t2.add_row(k.replace("_", " ").capitalize(), str(v))
+        console.print(t2)
+        for a in contraste.advertencias:
+            console.print(f"[yellow]⚠ {a}[/]")
+
+    guardar_resumen(salidas / "resumen_campana.json", resumen, contraste)
+    console.print(f"\n[green]✓[/] Recalibre con [cyan]ptnt diagnostico "
+                  f"--multados {destino}[/] para que el detector use lo aprendido.")
+
+
+@app.command()
+def pares(
+    entrada: str = typer.Option(..., "--entrada",
+                                help="CSV con una fila por entidad y su perfil"),
+    nivel: str = typer.Option("ALIMENTADOR", "--nivel",
+                              help="ALIMENTADOR|RAMAL|PUESTO_TRANSFORMACION|"
+                                   "RUTA_COMERCIAL|SECTOR"),
+    metrica: str = typer.Option("pnt_pct", "--metrica"),
+    parecidas_a: str = typer.Option("", "--parecidas-a",
+                                    help="Muestra las entidades similares a esta"),
+    z: float = typer.Option(3.0, "--z", help="Desviaciones para marcar atípica"),
+    config: str = _CONFIG_OPT,
+):
+    """Compara cada entidad contra las que **se le parecen**, no contra el promedio.
+
+    Un alimentador rural largo pierde más por física; uno urbano compacto con la
+    misma cifra tiene un problema. Compararlos contra el promedio de la empresa
+    mezcla los dos y produce lo peor: cuadrillas mandadas a alimentadores que
+    están como deben estar, y alimentadores realmente malos que pasan por
+    normales porque el promedio los tapa.
+    """
+
+    from ptnt.anomalies.peer_entities import (PERFIL_POR_NIVEL,
+                                              comparar_contra_pares,
+                                              entidades_similares)
+
+    ruta = Path(entrada)
+    if not ruta.exists():
+        console.print(f"[red]No existe:[/] {ruta}")
+        raise typer.Exit(code=2)
+    d = pd.read_csv(ruta)
+    cfg_nivel = PERFIL_POR_NIVEL.get(nivel.upper(), {})
+    if not cfg_nivel:
+        console.print(f"[red]Nivel desconocido:[/] {nivel}. "
+                      f"Use uno de: {', '.join(PERFIL_POR_NIVEL)}")
+        raise typer.Exit(code=2)
+
+    if parecidas_a:
+        sim = entidades_similares(d, parecidas_a, nivel=nivel.upper())
+        if sim.empty:
+            console.print(f"[yellow]Sin entidades comparables con {parecidas_a}[/]")
+            raise typer.Exit(code=1)
+        t = Table(title=f"Entidades parecidas a {parecidas_a}")
+        cols = ["entidad"] + [c for c in cfg_nivel["perfil"] if c in sim.columns]
+        if metrica in sim.columns:
+            cols.append(metrica)
+        for c in cols:
+            t.add_column(c.replace("_", " ").capitalize(),
+                         justify="right" if c != "entidad" else "left")
+        for _, r in sim.iterrows():
+            t.add_row(*[f"{r[c]:,.1f}" if isinstance(r[c], float) else str(r[c])
+                        for c in cols])
+        console.print(t)
+        return
+
+    rep = comparar_contra_pares(
+        d, nivel=nivel.upper(), columna_id="entidad", columna_metrica=metrica,
+        columnas_perfil=cfg_nivel["perfil"],
+        columnas_categoricas=cfg_nivel.get("categoricas"), z_minimo=z)
+
+    for a in rep.advertencias:
+        console.print(f"[yellow]⚠ {a}[/]")
+
+    if not rep.atipicas:
+        console.print(f"[green]✓[/] Ninguna de las {rep.n_evaluadas:,} entidades "
+                      f"de nivel {nivel} se aparta de sus pares. Que la métrica "
+                      "sea alta en algunas no significa que estén mal: significa "
+                      "que están como sus parecidas.")
+        return
+
+    t = Table(title=f"{nivel}: se apartan de lo que su estructura explicaría")
+    for c in ("Entidad", "Observado", "Esperado", "Desviación", "z", "Severidad",
+              "Se comparó con"):
+        t.add_column(c, justify="left" if c in ("Entidad", "Severidad",
+                                                "Se comparó con") else "right")
+    for a in rep.atipicas[:25]:
+        t.add_row(a.entidad, f"{a.observado:,.1f}", f"{a.esperado:,.1f}",
+                  f"{a.desviacion:+,.1f}", f"{a.z_robusto:+.1f}", a.severidad,
+                  ", ".join(a.pares[:3]))
+    console.print(t)
+    console.print(f"\n  {len(rep.altas)} entidad(es) pierden **más** de lo que su "
+                  "estructura explica: ahí conviene mirar.")
+    console.print("  [yellow]No es una acusación:[/] apartarse del grupo puede ser "
+                  "hurto, un transformador mal asignado, un cliente no vinculado "
+                  "o una maniobra no reportada. Es una pregunta bien hecha.")
+
+
+@app.command()
 def campo_simular(
     paquete: str = typer.Option(..., "--paquete",
                                 help="Ruta del .gpkg descargado por el técnico"),
