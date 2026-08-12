@@ -36,6 +36,11 @@ sources = [
     "oracledb>=2.0",      # Oracle
     "PyMySQL>=1.1",       # MySQL / MariaDB
 ]
+# Lectura de File Geodatabase de ArcGIS sin depender de arcpy: driver
+# OpenFileGDB de GDAL vía pyogrio. Va aparte de `sources` porque en un entorno
+# clonado de ArcGIS Pro puede haber GDAL por conda, y forzar la rueda de pip
+# sobre él es la vía rápida a un entorno roto.
+fgdb = ["pyogrio>=0.8"]
 # Detección de anomalías no supervisada
 ml = ["scikit-learn>=1.4", "ruptures>=1.1"]
 # Validación cruzada del flujo con OpenDSS

@@ -777,7 +777,7 @@ termina con código de salida distinto de cero si alguna comprobación falla.
 | **Mecanismo de promedio** multi-mes | RF-10…RF-12 | ✅ |
 | Identificar clientes con **hurto** | S1–S9, RF-30…RF-32 | ✅ |
 | Arquitectura, implementación Windows, proceso | `docs/ARQUITECTURA.md`, `INSTALACION_WINDOWS.md`, `PROCESO.md` | ✅ |
-| **Documentado** + pruebas de integración y seguridad | 464 pruebas, 18 documentos | ✅ |
+| **Documentado** + pruebas de integración y seguridad | 464 pruebas, 19 documentos | ✅ |
 | **Interfaz web** para escritorio y para terceros | RF-101, RF-102 | ✅ |
 | Esquema **Puesto → Unidad** | RF-40, §3.1 | ✅ |
 | **CLIRLSCOD** como agrupador | RF-23, RF-73 | ✅ |

@@ -28,6 +28,18 @@ cartografía viaja dentro del paquete de trabajo.
 
 ## 2. Instalación paso a paso (PowerShell)
 
+> **Si el servidor tiene varios Python** —el de ArcGIS Pro y otros— use el
+> instalador guiado, que instala en el que usted indique sin tocar los demás y
+> protege las versiones que ArcGIS fijó:
+>
+> ```powershell
+> .\scripts\instalar_ptnt.ps1 -Python "C:\...\envs\su_clon\python.exe"
+> ```
+>
+> Explicado para quien no lo ha hecho antes en
+> [INSTALACION_PASO_A_PASO.md](INSTALACION_PASO_A_PASO.md). Lo que sigue es la
+> instalación manual, para un servidor con un solo Python.
+
 Abrir **PowerShell como Administrador** en la carpeta del proyecto:
 
 ```powershell
