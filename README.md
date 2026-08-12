@@ -81,7 +81,8 @@ datos de la red (esquema **Puesto → Unidad** homologado CNEL EP):
 > campos y arquitectura de información para replicar el sistema.
 >
 > Documentación en [`docs/`](docs/): [Arquitectura](docs/ARQUITECTURA.md) ·
-> [Instalación en Windows](docs/INSTALACION_WINDOWS.md) ·
+> **[Instalación paso a paso en Windows](docs/INSTALACION_PASO_A_PASO.md)** ·
+> [Instalación en Windows Server](docs/INSTALACION_WINDOWS.md) ·
 > **[Guía de operación paso a paso](docs/GUIA_OPERACION.md)** ·
 > [Segmentación de clientes](docs/SEGMENTACION.md) ·
 > **[Prueba a escala — 20 000 clientes](docs/PRUEBA_COSTA_20K.md)** ·
@@ -213,6 +214,18 @@ numpy/pandas/pydantic, para correr en un servidor mínimo. El resto son extras:
 ```bash
 pip install -e ".[all]"   # todo
 ```
+
+**En Windows con varios Python instalados** —el de ArcGIS Pro y otros— hay un
+instalador que lo deja operativo sin tocar los demás entornos:
+
+```powershell
+.\scripts\instalar_ptnt.ps1 -Python "C:\...\envs\su_clon\python.exe"
+```
+
+Protege las versiones que ArcGIS fijó (para que `arcpy` siga funcionando),
+maneja proxy corporativo e instalación sin internet, y **verifica al final que
+quedó operativo**. Paso a paso en
+[`docs/INSTALACION_PASO_A_PASO.md`](docs/INSTALACION_PASO_A_PASO.md).
 
 ## Estructura
 
