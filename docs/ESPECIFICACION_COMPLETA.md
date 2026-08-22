@@ -10,7 +10,7 @@ interfaces, y la trazabilidad requerimiento → módulo → prueba.
 | Sistema | PTNT-BAL — Pérdidas No Técnicas y Balance Energético |
 | Ámbito | Distribuidora eléctrica (modelo de datos CNEL EP, esquema Puesto → Unidad) |
 | Stack | Python 3.11+, pydantic v2, pandas/numpy, DuckDB, typer, Streamlit, FastAPI |
-| Estado | 492 pruebas en verde |
+| Estado | 517 pruebas en verde |
 
 ---
 
@@ -280,14 +280,40 @@ dominio), el **módulo** que lo implementa y la **prueba** que lo verifica.
 
 | ID | Requerimiento | Módulo |
 |---|---|---|
-| RF-100 | **CLI** completa (34 comandos) | `cli.py` |
-| RF-101 | **Tablero de escritorio** (Streamlit) con 8 pestañas | `dashboard/app.py` |
+| RF-100 | **CLI** completa (42 comandos) | `cli.py` |
+| RF-101 | **Tablero de escritorio** (Streamlit) con 12 pestañas | `dashboard/app.py` |
 | RF-102 | **Visor web de solo lectura** (FastAPI) para consulta por terceros | `webviewer/app.py` |
 | RF-103 | Pestaña de **unidad de negocio y subestación** | `dashboard/app.py` |
 | RF-104 | Pestaña de **histórico** con comparación de períodos | `dashboard/app.py` |
 | RF-105 | Pestaña de **carga de datos** con registro de alcance y pendientes | `dashboard/app.py` |
 | RF-106 | **Informes HTML + PDF por etapa**, autocontenidos | `report/` |
 | RF-107 | Pestaña de **trabajo de campo**: técnicos, reparto, paquetes y revisión | `dashboard/app.py` |
+
+## 2.10b Ejecución y automatización
+
+| ID | Requerimiento | Módulo | Prueba |
+|---|---|---|---|
+| RF-108 | **Ejecutar el proceso desde el tablero**, sin escribir comandos, con avance visible | `jobs/`, `dashboard/paneles.py` | `test_jobs`, `test_tablero` |
+| RF-109 | El botón, la tarea programada y la consola usan **el mismo camino de ejecución** | `jobs/ejecutor.py` | `test_jobs` |
+| RF-110 | El cálculo corre **aparte**: no muere al cerrar el navegador | `jobs/ejecutor.py` | — |
+| RF-111 | Un paso que falla **detiene la cadena** y lo declara | `jobs/ejecutor.py` | `test_jobs` |
+| RF-112 | **Bitácora** de cada corrida, escrita mientras ocurre | `jobs/ejecutor.py` | `test_jobs` |
+| RF-113 | **Actualizaciones periódicas** (diaria/semanal/mensual) delegadas al planificador del sistema operativo | `jobs/programacion.py` | `test_jobs` |
+| RF-114 | Generar la **orden exacta** de `schtasks` / cron, con rutas absolutas y carpeta de trabajo | `jobs/programacion.py` | `test_jobs` |
+| RF-115 | Detectar y reportar una tarea que **se saltó su cita** | `jobs/programacion.py` | `test_jobs` |
+| RF-116 | El tablero aplica el **alcance por unidad de negocio** en cada tabla y en las cifras de portada | `dashboard/app.py` | `test_tablero` |
+| RF-117 | El **ranking lleva la unidad de negocio** de cada cliente | `pipeline.py` | `test_tablero` |
+
+> **RF-109 — por qué un solo camino.** Reimplementar el proceso dentro del
+> tablero garantiza que, con el tiempo, el número del botón y el de la madrugada
+> dejen de coincidir. Se invoca la CLI real como proceso aparte.
+
+> **RF-113 — por qué no un servicio propio.** Habría que vigilar que siga vivo,
+> arrancarlo con la máquina y explicar por qué un martes no se ejecutó. El
+> Programador de tareas de Windows ya hace eso y sobrevive a los reinicios.
+
+> **RF-115 — por qué hace falta.** El planificador sabe si *lanzó* el proceso; no
+> sabe si el proceso *hizo lo que debía*. Esto es lo segundo, y es lo que importa.
 
 ## 2.12 Ajuste a los recursos del equipo
 
@@ -562,6 +588,7 @@ src/ptnt/
 ├── security/     Auth (hash), secretos por entorno, alcance por unidad de negocio
 ├── runtime/      Recursos, ejecutor con cola y control de admisión
 ├── workspace/    Escenarios: acumular cambios, evaluar sobre copia, iteraciones
+├── jobs/         Ejecución del proceso, bitácora y tareas programadas
 ├── field/        Trabajo de campo (ver abajo)
 ├── synth/        Generadores de escenario con verdad conocida (incl. fuentes multi-alimentador)
 ├── dashboard/    Tablero Streamlit (8 pestañas)
@@ -674,6 +701,14 @@ mobile/app/src/main/java/ec/cnel/ptnt/field/
 | `ptnt escenario-evolucion` | Iteración a iteración, la evolución de la entidad |
 | `ptnt escenario-comparar` | Qué cambió entre dos iteraciones |
 | `ptnt escenario-listar` | Escenarios que ese usuario alcanza |
+| `ptnt pasos` | Qué se puede ejecutar, en lenguaje llano |
+| `ptnt ejecutar` | **Lanza el proceso** (plan completo o pasos sueltos) con bitácora |
+| `ptnt ejecuciones` | Las últimas corridas y cómo acabaron |
+| `ptnt tarea-crear` | Define una **actualización periódica** y dice cómo registrarla |
+| `ptnt tarea-listar` | Las tareas, y si alguna **se saltó su cita** |
+| `ptnt tarea-instrucciones` | El paso a paso para dejarla en el Programador de Windows |
+| `ptnt tarea-ejecutar` | Ejecuta una tarea. **Es lo que invoca el planificador** |
+| `ptnt tarea-quitar` | Borra la definición |
 
 ---
 
@@ -716,6 +751,10 @@ incorrectos.
 | 30 | El alcance **nunca infiere** la unidad del prefijo del código | Se daría o negaría acceso por una coincidencia de texto |
 | 31 | Al migrar un alimentador, puestos y clientes se **recortan a sus nodos** | Con varios alimentadores en la fuente, el balance sumaría energía facturada ajena |
 | 32 | Un cambio que **no se pudo aplicar** se reporta con el número | El analista decidiría creyendo que probó algo que no probó |
+| 33 | Un paso que falla **detiene la cadena** | Se calcularía el balance sobre una red que no se llegó a traer |
+| 34 | La bitácora se escribe **mientras** corre, no al final | Un corte a mitad no dejaría constancia de hasta dónde se llegó |
+| 35 | Las órdenes del planificador llevan **rutas absolutas** y fijan la carpeta | A las tres de la mañana no encontraría la configuración, o escribiría en System32 |
+| 36 | El día del mes de una tarea se limita al **28** | Del 29 al 31 hay meses sin ese día: la tarea se saltaría en silencio |
 
 ---
 
@@ -799,7 +838,7 @@ hace fallar el arranque.
 | `synth/escenario_costa.py` | 20 000 clientes | Prueba a escala, 12 alimentadores, informes PDF |
 
 ```bash
-pytest                                    # 492 pruebas
+pytest                                    # 517 pruebas
 python scripts/demo_completa.py           # análisis, 9 pasos
 python scripts/demo_ciclo_completo.py     # CICLO ENTERO, 15 etapas, 22 comprobaciones
 python scripts/demo_campo_multiusuario.py # despacho a 3 cuadrillas
@@ -823,7 +862,7 @@ termina con código de salida distinto de cero si alguna comprobación falla.
 | **Mecanismo de promedio** multi-mes | RF-10…RF-12 | ✅ |
 | Identificar clientes con **hurto** | S1–S9, RF-30…RF-32 | ✅ |
 | Arquitectura, implementación Windows, proceso | `docs/ARQUITECTURA.md`, `INSTALACION_WINDOWS.md`, `PROCESO.md` | ✅ |
-| **Documentado** + pruebas de integración y seguridad | 492 pruebas, 19 documentos | ✅ |
+| **Documentado** + pruebas de integración y seguridad | 517 pruebas, 21 documentos | ✅ |
 | **Interfaz web** para escritorio y para terceros | RF-101, RF-102 | ✅ |
 | Esquema **Puesto → Unidad** | RF-40, §3.1 | ✅ |
 | **CLIRLSCOD** como agrupador | RF-23, RF-73 | ✅ |

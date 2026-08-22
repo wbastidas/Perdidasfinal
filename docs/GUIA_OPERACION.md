@@ -11,6 +11,24 @@ información nueva y qué ocurre cuando cambia la topología de la red.
 
 ---
 
+## Antes de nada: no hace falta escribir comandos
+
+Todo lo que sigue se puede hacer desde el navegador:
+
+```bash
+ptnt dashboard
+```
+
+En la pestaña **▶️ Actualizar los números** se elige qué hacer, se pulsa
+*Empezar*, y el proceso corre solo — se puede cerrar la ventana. En **⏰
+Automático** se deja programado para que se repita sin que nadie se acuerde. El
+detalle está en [INTERFACES.md](INTERFACES.md).
+
+Esta guía explica los comandos porque son los que hay debajo de cada botón y
+porque a veces se quiere automatizar. Las dos vías hacen exactamente lo mismo.
+
+---
+
 ## 0. Preparación (una sola vez)
 
 ```bash

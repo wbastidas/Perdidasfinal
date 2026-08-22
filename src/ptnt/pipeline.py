@@ -165,6 +165,17 @@ def run_analysis(
         clientes=clientes,
     )
 
+    # La unidad de negocio de cada cliente viaja con el ranking. Sin ella no hay
+    # forma de saber de quién es cada fila, y todo lo que se apoya en eso —quién
+    # puede ver qué, a qué unidad se le imputa un hallazgo— se queda sin base.
+    # El dato ya venía en el padrón (DIVISION); solo se estaba perdiendo aquí.
+    if ("division" in getattr(clientes, "columns", [])
+            and not ranking.ranking.empty):
+        unidades = (clientes.set_index("contract_account")["division"]
+                    .astype(str))
+        ranking.ranking["unidad_negocio"] = (
+            ranking.ranking["contract_account"].map(unidades).fillna(""))
+
     metricas = {
         "n_cuentas": parsed.n_cuentas,
         "n_meses": len(parsed.meses),

@@ -89,6 +89,13 @@ def _check_auth(cfg) -> bool:
     """Autenticación simple usuario/contraseña contra el almacén de usuarios."""
 
     if not cfg.seguridad.autenticacion_habilitada:
+        # Sin autenticación no hay a quién atribuir un alcance. Se entra como
+        # matriz porque es una instalación de prueba o de un solo usuario; en
+        # producción la autenticación está activa y esto no ocurre.
+        st.session_state.setdefault("usuario", "sin-autenticacion")
+        st.session_state.setdefault("matriz", True)
+        st.session_state.setdefault("unidades", [])
+        st.session_state.setdefault("role", "admin")
         return True
     from ptnt.security.auth import UserStore
 
@@ -105,10 +112,111 @@ def _check_auth(cfg) -> bool:
         if user and user.role in {"analyst", "admin"}:
             st.session_state["auth_ok"] = True
             st.session_state["role"] = user.role
+            # El alcance se fija al entrar y no se vuelve a preguntar: que cada
+            # pantalla lo consultara por su cuenta es justo como se acaba
+            # olvidando en una de ellas.
+            st.session_state["usuario"] = user.username
+            st.session_state["unidades"] = list(user.unidades)
+            st.session_state["matriz"] = bool(user.matriz)
             st.rerun()
         else:
             st.error("Credenciales inválidas o rol sin permiso de análisis.")
     return False
+
+
+def _alcance():
+    """El alcance de quien está dentro, tal como quedó al autenticarse."""
+
+    from ptnt.security.scope import Alcance
+
+    return Alcance(usuario=st.session_state.get("usuario", ""),
+                   unidades=frozenset(st.session_state.get("unidades", [])),
+                   matriz=bool(st.session_state.get("matriz", False)))
+
+
+def _barra_lateral(cfg, alcance):
+    """Quién está dentro, qué alcanza y —si es matriz— sobre qué quiere mirar."""
+
+    with st.sidebar:
+        st.markdown(f"### 👤 {alcance.usuario or 'invitado'}")
+        st.caption(alcance.descripcion())
+
+        elegida = None
+        if alcance.matriz:
+            unidades = []
+            ruta = cfg.organizacion.catalogo or ""
+            if ruta and Path(ruta).exists():
+                from ptnt.org.hierarchy import load_jerarquia
+                unidades = load_jerarquia(ruta).unidades
+            if unidades:
+                # La matriz **elige**, no acumula: mirar todas a la vez y mirar
+                # una concreta son dos preguntas distintas.
+                elegida = st.selectbox("Ver los datos de",
+                                       ["Todas las unidades", *unidades])
+                elegida = None if elegida == "Todas las unidades" else elegida
+        elif alcance.sin_alcance:
+            st.error("No tiene ninguna unidad de negocio asignada, así que no "
+                     "verá datos. Pídale a un administrador que se la asigne.")
+
+        st.divider()
+        st.caption("¿Perdido? Empiece por **Actualizar los números** para "
+                   "calcular, y luego **Dónde inspeccionar** para ver a dónde ir.")
+        if st.button("Salir"):
+            for k in ("auth_ok", "usuario", "unidades", "matriz", "role"):
+                st.session_state.pop(k, None)
+            st.rerun()
+    return elegida
+
+
+_COLS_ALIMENTADOR = ("alimentador", "feeder_code", "feeder", "codigo_alimentador")
+
+
+@st.cache_data(show_spinner=False)
+def _mapa_unidades(ruta_catalogo: str) -> dict:
+    """Alimentador → unidad de negocio, del catálogo organizacional."""
+
+    if not ruta_catalogo or not Path(ruta_catalogo).exists():
+        return {}
+    from ptnt.org.hierarchy import load_jerarquia
+
+    jer = load_jerarquia(ruta_catalogo)
+    return {c: a.unidad_negocio for c, a in jer.alimentadores.items()}
+
+
+def _con_unidad(df, mapa: dict):
+    """Añade ``unidad_negocio`` deduciéndola del alimentador de cada fila.
+
+    Los resultados se guardan por alimentador, no por unidad de negocio. Sin
+    este paso el filtro no tendría por dónde agarrar y —al fallar cerrado—
+    dejaría todas las tablas vacías: la protección existiría sobre el papel y el
+    tablero no serviría para nada.
+    """
+
+    if df is None or not hasattr(df, "columns") or df.empty or not mapa:
+        return df
+    if "unidad_negocio" in df.columns:
+        return df
+    col = next((c for c in _COLS_ALIMENTADOR if c in df.columns), None)
+    if col is None:
+        return df
+    return df.assign(
+        unidad_negocio=df[col].astype(str).map(mapa).fillna(""))
+
+
+def _filtrar(df, alcance, mapa: dict, unidad_elegida=None):
+    """Deja solo lo que este usuario puede ver.
+
+    Se aplica **a cada tabla que se pinta**, no una sola vez al cargar: los
+    resultados son archivos ya calculados con todas las unidades dentro, y una
+    pestaña nueva que se olvide de filtrar mostraría el padrón de otra unidad.
+    """
+
+    if df is None or not hasattr(df, "columns") or df.empty:
+        return df
+    out = alcance.filtrar(_con_unidad(df, mapa))
+    if unidad_elegida is not None and "unidad_negocio" in getattr(out, "columns", []):
+        out = out[out["unidad_negocio"].astype(str) == str(unidad_elegida)]
+    return out
 
 
 def main() -> None:
@@ -120,22 +228,49 @@ def main() -> None:
     if not _check_auth(cfg):
         return
 
+    from ptnt.dashboard.paneles import (panel_ejecucion, panel_escenarios,
+                                        panel_tareas)
+
+    alcance = _alcance()
+    unidad_elegida = _barra_lateral(cfg, alcance)
+    mapa = _mapa_unidades(cfg.organizacion.catalogo or "")
+    usuario = st.session_state.get("usuario", "")
+    es_admin = st.session_state.get("role") == "admin"
+
     data = _load_outputs(cfg.rutas.salidas)
     if "ranking_clientes" not in data:
-        st.warning(
-            "No hay resultados calculados. Ejecute primero: "
-            "`ptnt analizar --csv <archivo.csv>`"
-        )
+        # Antes esto era un callejón sin salida: decía «ejecute este comando» a
+        # quien había entrado por el navegador justamente para no escribir
+        # comandos. Ahora se le ofrece el botón.
+        st.markdown(
+            """
+            <div class="ptnt-hero">
+              <h1>⚡ PTNT-BAL</h1>
+              <p>Todavía no hay resultados calculados. Empiece por aquí.</p>
+            </div>
+            """, unsafe_allow_html=True)
+        st.info("**Es la primera vez que se usa.** Pulse *Empezar* abajo para "
+                "traer los datos y calcular. Tarda unos minutos y puede cerrar "
+                "la ventana mientras tanto.")
+        panel_ejecucion(cfg, args.config, usuario)
         return
 
-    ranking = data["ranking_clientes"]
+    ranking = _filtrar(data["ranking_clientes"], alcance, mapa, unidad_elegida)
     met = data.get("metricas", {})
 
+    if ranking is not None and ranking.empty and not alcance.matriz:
+        st.warning(
+            "No hay resultados de su unidad de negocio. O todavía no se ha "
+            "calculado, o los datos cargados son de otra unidad.")
+
+    ambito = (unidad_elegida or
+              ("todas las unidades" if alcance.matriz
+               else ", ".join(sorted(alcance.unidades)) or "sin unidad asignada"))
     st.markdown(
         f"""
         <div class="ptnt-hero">
           <h1>⚡ PTNT-BAL — Pérdidas No Técnicas y Balance Energético</h1>
-          <p>Unidad de negocio {met.get('unidad_negocio', cfg.proyecto.unidad_negocio)} ·
+          <p>Viendo: {ambito} ·
              Análisis de consumo multi-mes, recálculo de potencia y detección de hurto</p>
         </div>
         """,
@@ -143,10 +278,22 @@ def main() -> None:
     )
 
     # -- Portada / línea base ------------------------------------------------
+    # Las cifras salen de lo que este usuario alcanza, no del archivo global:
+    # enseñarle a un analista de una unidad el total de la empresa lo llevaría a
+    # informar un número que no es el suyo.
+    propio = alcance.matriz and unidad_elegida is None
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Cuentas analizadas", f"{met.get('n_cuentas', len(ranking)):,}")
+    c1.metric("Cuentas analizadas",
+              f"{met.get('n_cuentas', len(ranking)) if propio else len(ranking):,}")
     c2.metric("Meses de consumo", met.get("n_meses", "-"))
-    c3.metric("Clientes sospechosos", f"{met.get('n_sospechosos', 0):,}")
+    if propio:
+        n_sosp = met.get("n_sospechosos", 0)
+    else:
+        col = next((c for c in ("es_sospechoso", "sospechoso")
+                    if c in getattr(ranking, "columns", [])), None)
+        n_sosp = int(ranking[col].astype(bool).sum()) if col else "-"
+    c3.metric("Clientes sospechosos",
+              f"{n_sosp:,}" if isinstance(n_sosp, int) else n_sosp)
     dp = met.get("delta_p_total_pct")
     c4.metric("Δ Potencia (SIG→corregido)", f"{dp:.1f}%" if dp is not None else "-")
 
@@ -156,12 +303,23 @@ def main() -> None:
         f"Método de demanda: **{met.get('metodo_demanda','-')}**"
     )
 
-    tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
-        ["📍 Dónde inspeccionar", "🎯 Sospecha de hurto",
+    (tab_run, tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8,
+     tab_esc, tab_prog) = st.tabs(
+        ["▶️ Actualizar los números", "📍 Dónde inspeccionar",
+         "🎯 Sospecha de hurto",
          "🔌 Reconciliación de potencia", "📈 Cliente", "⚖️ Balance de red",
          "🏢 Unidad y subestación", "📅 Histórico", "📥 Carga de datos",
-         "📱 Trabajo de campo"]
+         "📱 Trabajo de campo", "🧪 Probar cambios", "⏰ Automático"]
     )
+
+    with tab_run:
+        panel_ejecucion(cfg, args.config, usuario)
+
+    with tab_esc:
+        panel_escenarios(cfg, args.config, usuario, alcance)
+
+    with tab_prog:
+        panel_tareas(cfg, args.config, usuario, es_admin)
 
     # -- V7: focalización de levantamientos (§11.5) --------------------------
     with tab0:
@@ -181,7 +339,7 @@ def main() -> None:
             c3.metric("Problema de datos", f"{res.get('objetivos_con_problema_datos', 0):,}",
                       help="Score alto en zona de baja confiabilidad: corregir datos antes de inspeccionar")
             if ot_path.exists():
-                ot = pd.read_csv(ot_path)
+                ot = _filtrar(pd.read_csv(ot_path), alcance, mapa, unidad_elegida)
                 c4.metric("Órdenes de trabajo", f"{len(ot):,}")
             else:
                 ot = pd.DataFrame()
@@ -269,13 +427,24 @@ def main() -> None:
             "Seleccione una cuenta del ranking para ver su serie de consumo. "
             "(La serie completa se sirve desde DuckDB en la instalación operativa.)"
         )
-        cuenta = st.selectbox("Cuenta contrato", ranking["contract_account"].head(200))
-        fila = ranking[ranking["contract_account"] == cuenta].iloc[0]
-        st.write("**Score de sospecha:**", round(float(fila["score"]), 3))
-        st.write("**Señales activas:**", int(fila["n_senales_activas"]))
-        st.write("**Razones:**")
-        for r in (fila["razones"] if isinstance(fila["razones"], (list, tuple)) else []):
-            st.write(f"- {r}")
+        if ranking.empty:
+            # Puede pasar sin que nada esté roto: un analista cuya unidad de
+            # negocio todavía no se ha cargado. Antes esto tumbaba el tablero
+            # entero con un IndexError.
+            st.warning("No hay clientes que usted pueda consultar.")
+        else:
+            cuenta = st.selectbox("Cuenta contrato",
+                                  ranking["contract_account"].head(200))
+            coincide = ranking[ranking["contract_account"] == cuenta]
+            fila = coincide.iloc[0]
+            st.write("**Score de sospecha:**", round(float(fila["score"]), 3))
+            st.write("**Señales activas:**", int(fila["n_senales_activas"]))
+            st.write("**Razones:**")
+            razones = fila["razones"]
+            if isinstance(razones, str):
+                razones = [r.strip() for r in razones.split(",") if r.strip()]
+            for r in (razones if isinstance(razones, (list, tuple)) else []):
+                st.write(f"- {r}")
 
     # -- V4/V5: balance energético y pérdidas técnicas (pipeline de red) -----
     with tab4:
@@ -343,7 +512,8 @@ def main() -> None:
                 agregar_balance, jerarquia_desde_alimentadores, load_jerarquia,
             )
 
-            df_bal = pd.read_csv(bal_path)
+            df_bal = _filtrar(pd.read_csv(bal_path), alcance, mapa,
+                              unidad_elegida)
             if cfg.organizacion.catalogo and Path(cfg.organizacion.catalogo).exists():
                 jer = load_jerarquia(cfg.organizacion.catalogo)
             else:
@@ -600,7 +770,8 @@ def main() -> None:
             elif not reg.usuarios:
                 st.info("Cree al menos un técnico en la pestaña anterior.")
             else:
-                ot = pd.read_csv(ot_path)
+                ot = _filtrar(pd.read_csv(ot_path), alcance, mapa,
+                              unidad_elegida)
                 asignadas = set(reg.asignaciones)
                 ot["asignada_a"] = ot["orden_trabajo"].map(
                     lambda o: reg.asignaciones[o].asignado_a
