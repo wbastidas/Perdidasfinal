@@ -312,6 +312,53 @@ Lo que cambia es la prioridad, no la ubicación.
 
 ---
 
+## 8.bis Probar un cambio antes de publicarlo
+
+Hasta aquí todo lo que se ejecuta modifica el estado oficial. Falta lo contrario:
+**«hice unos cambios en este alimentador, ¿cómo saldría el balance?»** sin
+comprometer nada.
+
+```bash
+# 1. Definir el alcance: un alimentador (o una subestación entera)
+ptnt escenario-abrir "Repotenciar TS2 y TS3" --usuario ana --entidad GYE-01
+
+# 2. Acumular cuantos cambios haga falta — el modelo oficial no se toca
+ptnt escenario-cambiar 40439679 --capa ptnt_puesto_transformacion \
+     --elemento TS2 --campo kva --valor 150 --motivo "Sobrecargado"
+
+# 3. Ver el balance AHORA, con esos cambios puestos
+ptnt escenario-evaluar 40439679 --usuario ana --cabecera datos/cabecera.csv
+
+# 4. Otra idea, otra evaluación… y la evolución queda registrada
+ptnt escenario-evolucion --entidad GYE-01 --usuario ana
+ptnt escenario-comparar 40439679 --desde 1 --hasta 2
+```
+
+Cada `escenario-evaluar` deja una **iteración** que no se sobrescribe: es la
+evolución del alimentador en el tiempo, y con `--entidad` cruza todos los
+escenarios que ha tenido.
+
+Para una subestación, `--nivel SUBESTACION` toma todos sus alimentadores, calcula
+cada uno y consolida —recalculando el porcentaje sobre los totales, nunca
+promediando.
+
+**Lo que se ve en pantalla dice de qué clase es el número:** si no se entrega
+`--cabecera`, el balance sale marcado `INDICATIVO` y la lectura advierte que es
+una estimación, útil para comparar iteraciones entre sí pero no para declararla
+como pérdida. Los controles que saltan (`C01` PNT negativa, etc.) salen en la
+misma pantalla.
+
+Los cambios que traiga una cuadrilla se pueden probar igual, antes de aceptarlos:
+
+```bash
+ptnt escenario-cambiar 40439679 --desde-paquete outputs/campo/paquetes/jperez.gpkg
+```
+
+Cada usuario solo alcanza los alimentadores de **su** unidad de negocio; la
+matriz los alcanza todos. Detalle completo en [`ESCENARIOS.md`](ESCENARIOS.md).
+
+---
+
 ## 9. Llevar el trabajo al campo y traerlo de vuelta
 
 Hasta aquí el sistema dice **dónde ir**. Esta parte es la que cierra el ciclo: sin

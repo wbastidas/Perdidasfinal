@@ -118,6 +118,21 @@ def migrate_network(cfg: AppConfig, feeder_code: str | None = None) -> NetworkMo
     fc = feeder_code or (seg["feeder_code"].iloc[0] if "feeder_code" in seg.columns else "F001")
     if "feeder_code" in seg.columns and feeder_code:
         seg = seg[seg["feeder_code"] == feeder_code]
+        if seg.empty:
+            raise MigrationError(
+                f"La fuente '{mig.fuente}' no tiene ningún tramo del alimentador "
+                f"'{feeder_code}'.")
+
+    # Los nodos de ESTE alimentador. Puestos, clientes y luminarias se recortan a
+    # ellos: cuando la fuente trae varios alimentadores —lo normal en cuanto se
+    # trabaja una subestación entera— sin este recorte se colarían en el modelo
+    # los puestos y clientes de los demás, colgados de nodos que su grafo no
+    # tiene. El flujo los ignoraría por inalcanzables, pero el balance sí sumaría
+    # su energía facturada: la PNT del alimentador saldría mal y nada avisaría.
+    nodos = set(seg["from_node"].astype(str)) | set(seg["to_node"].astype(str))
+    puestos = _solo_nodos(puestos, nodos)
+    clientes = _solo_nodos(clientes, nodos)
+    lums = _solo_nodos(lums, nodos)
 
     # Fuente: nodo que no aparece como destino de ningún tramo
     froms = set(seg["from_node"]); tos = set(seg["to_node"])
@@ -178,6 +193,14 @@ def migrate_network(cfg: AppConfig, feeder_code: str | None = None) -> NetworkMo
         transformer_sites=transformer_sites, customer_nodes=customer_nodes,
         streetlight_nodes=streetlight_nodes,
     )
+
+
+def _solo_nodos(df: pd.DataFrame, nodos: set[str]) -> pd.DataFrame:
+    """Filas cuyo ``node`` pertenece al alimentador que se está migrando."""
+
+    if df is None or df.empty or "node" not in df.columns:
+        return df
+    return df[df["node"].astype(str).isin(nodos)]
 
 
 def _parse_kvas(value) -> list[float]:

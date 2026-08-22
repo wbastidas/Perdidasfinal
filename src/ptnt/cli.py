@@ -754,21 +754,96 @@ def servir_visor(config: str = _CONFIG_OPT):
 def crear_usuario(
     usuario: str = typer.Argument(..., help="Nombre de usuario"),
     rol: str = typer.Option("viewer", "--rol", help="viewer | analyst | admin"),
+    unidad: str = typer.Option("", "--unidad",
+                               help="Unidad(es) de negocio, separadas por coma"),
+    matriz: bool = typer.Option(False, "--matriz",
+                                help="Oficina central: ve todas las unidades"),
     config: str = _CONFIG_OPT,
 ):
-    """Crea un usuario para las interfaces web (contraseña por prompt seguro)."""
+    """Crea un usuario para las interfaces web (contraseña por prompt seguro).
+
+    El **alcance** determina qué datos puede ver: un analista de una unidad de
+    negocio no ve el padrón de otra. La matriz las ve todas y elige cuál
+    analizar.
+    """
 
     from ptnt.security.auth import AuthError, UserStore
 
     cfg = _cargar(config)
+    unidades = [u.strip() for u in unidad.split(",") if u.strip()]
     password = typer.prompt("Contraseña", hide_input=True, confirmation_prompt=True)
     store = UserStore(cfg.seguridad.ruta_usuarios)
     try:
-        store.add_user(usuario, password, rol)
+        store.add_user(usuario, password, rol, unidades=unidades, matriz=matriz)
     except AuthError as exc:
         console.print(f"[red]{exc}[/]")
         raise typer.Exit(code=2)
-    console.print(f"[green]✓[/] Usuario '{usuario}' ({rol}) creado en {cfg.seguridad.ruta_usuarios}")
+
+    alcance = ("todas las unidades (matriz)" if matriz or rol == "admin"
+               else ", ".join(unidades) if unidades else "SIN ALCANCE")
+    console.print(f"[green]✓[/] Usuario '{usuario}' ({rol}) creado en "
+                  f"{cfg.seguridad.ruta_usuarios}")
+    console.print(f"  Alcance: {alcance}")
+    if not matriz and rol != "admin" and not unidades:
+        # No se rechaza el alta —crear y asignar después es legítimo— pero se
+        # avisa aquí, que es donde se puede corregir en el momento.
+        console.print("[yellow]⚠ Sin unidad asignada este usuario no verá ningún "
+                      f"dato. Asígnela con:[/] ptnt usuario-unidad {usuario} "
+                      "--unidad CNEL-GYE")
+
+
+@app.command()
+def usuario_unidad(
+    usuario: str = typer.Argument(..., help="Nombre de usuario"),
+    unidad: str = typer.Option("", "--unidad",
+                               help="Unidad(es) de negocio, separadas por coma"),
+    matriz: bool = typer.Option(None, "--matriz/--no-matriz",
+                                help="Marcar o quitar el alcance de matriz"),
+    config: str = _CONFIG_OPT,
+):
+    """Cambia a qué unidades de negocio alcanza un usuario."""
+
+    from ptnt.security.auth import AuthError, UserStore
+
+    cfg = _cargar(config)
+    store = UserStore(cfg.seguridad.ruta_usuarios)
+    unidades = [u.strip() for u in unidad.split(",") if u.strip()]
+    try:
+        store.set_unidades(usuario, unidades, matriz=matriz)
+    except AuthError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=2)
+
+    from ptnt.security.scope import Alcance
+    u = next(x for x in store.usuarios() if x.username == usuario)
+    console.print(f"[green]✓[/] {usuario}: {Alcance.desde_usuario(u).descripcion()}")
+
+
+@app.command()
+def usuarios(config: str = _CONFIG_OPT):
+    """Lista los usuarios y qué alcanza cada uno."""
+
+    from ptnt.security.auth import UserStore
+    from ptnt.security.scope import Alcance
+
+    cfg = _cargar(config)
+    store = UserStore(cfg.seguridad.ruta_usuarios)
+    if not len(store):
+        console.print("[yellow]No hay usuarios creados todavía.[/] "
+                      "Cree uno con [cyan]ptnt crear-usuario[/].")
+        return
+
+    tabla = Table(title="Usuarios y alcance")
+    for c in ("Usuario", "Rol", "Alcance", "Estado"):
+        tabla.add_column(c)
+    for u in store.usuarios():
+        a = Alcance.desde_usuario(u)
+        estado = "[red]deshabilitado[/]" if u.disabled else "activo"
+        alcance = a.descripcion()
+        if a.sin_alcance:
+            alcance = f"[yellow]{alcance}[/]"
+        tabla.add_row(u.username, u.role, alcance, estado)
+    console.print(tabla)
 
 
 
@@ -1526,6 +1601,395 @@ def campo_paquetes(
             console.print(f"[yellow]⚠ {u}: {r}[/]")
     ok = sum(1 for r in resultados.values() if not isinstance(r, str))
     console.print(f"[green]✓[/] {ok} paquete(s) en {dir_campo / 'paquetes'}")
+
+
+def _almacen_escenarios(cfg):
+    from ptnt.workspace import AlmacenEscenarios
+    return AlmacenEscenarios(Path(cfg.rutas.salidas) / "escenarios" / "escenarios.db")
+
+
+def _alcance_de(cfg, usuario: str):
+    """Resuelve el alcance del usuario. Sin usuario declarado, no hay alcance."""
+
+    from ptnt.security.auth import UserStore
+    from ptnt.security.scope import Alcance
+
+    store = UserStore(cfg.seguridad.ruta_usuarios)
+    u = next((x for x in store.usuarios() if x.username == usuario), None)
+    if u is None:
+        console.print(f"[red]El usuario '{usuario}' no existe.[/] "
+                      f"Créelo con [cyan]ptnt crear-usuario {usuario} "
+                      "--unidad CNEL-GYE[/]")
+        raise typer.Exit(code=2)
+    return Alcance.desde_usuario(u)
+
+
+def _jerarquia_de(cfg):
+    """El catálogo organizacional configurado, o nada.
+
+    A diferencia de ``consolidar``, aquí **no se infiere** la unidad de negocio
+    del prefijo del código. La jerarquía decide quién puede ver y tocar qué: una
+    unidad adivinada daría o negaría acceso por una coincidencia de texto.
+    """
+
+    from ptnt.org.hierarchy import load_jerarquia
+
+    ruta = cfg.organizacion.catalogo or ""
+    if ruta and Path(ruta).exists():
+        return load_jerarquia(ruta)
+    return None
+
+
+@app.command()
+def escenario_abrir(
+    nombre: str = typer.Argument(..., help="Nombre del escenario"),
+    usuario: str = typer.Option(..., "--usuario", help="Quién lo abre"),
+    entidad: str = typer.Option(..., "--entidad",
+                                help="Alimentador o subestación a trabajar"),
+    nivel: str = typer.Option("ALIMENTADOR", "--nivel",
+                              help="ALIMENTADOR | SUBESTACION"),
+    comentario: str = typer.Option("", "--comentario"),
+    config: str = _CONFIG_OPT,
+):
+    """Abre un espacio para probar cambios **sin publicarlos**.
+
+    El usuario define el alcance —un alimentador o una subestación entera— y a
+    partir de ahí acumula cambios y evalúa el balance cuando quiera. El modelo
+    oficial no se toca hasta que se aplique explícitamente.
+    """
+
+    from ptnt.security.scope import AlcanceError, exigir_entidad
+
+    cfg = _cargar(config)
+    alcance = _alcance_de(cfg, usuario)
+    jer = _jerarquia_de(cfg)
+    if jer is None:
+        console.print("[red]No hay catálogo organizacional cargado.[/] Sin él no "
+                      "se puede saber a qué unidad pertenece cada alimentador, y "
+                      "el alcance por unidad de negocio no se puede aplicar.")
+        console.print("  Declare el CSV en [cyan]organizacion.catalogo[/] "
+                      "(feeder_code, subestacion, unidad_negocio).")
+        raise typer.Exit(code=2)
+
+    try:
+        res = exigir_entidad(alcance, jer, entidad, nivel)
+    except AlcanceError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=3)
+
+    with _almacen_escenarios(cfg) as alm:
+        esc = alm.abrir(nombre=nombre, usuario=usuario,
+                        unidad_negocio=res.unidad_negocio, nivel=nivel,
+                        entidad=entidad, alimentadores=res.alimentadores,
+                        comentario=comentario)
+
+    console.print(f"[green]✓[/] Escenario '{nombre}' abierto "
+                  f"([cyan]{esc.escenario_id[:8]}[/])")
+    console.print(f"  Alcance: {nivel} {entidad} · "
+                  f"{len(res.alimentadores)} alimentador(es) · "
+                  f"unidad {res.unidad_negocio or '(sin catalogar)'}")
+    console.print(f"\n  Acumule cambios y evalúe cuando quiera:")
+    console.print(f"    [cyan]ptnt escenario-cambiar {esc.escenario_id[:8]} "
+                  "--capa ptnt_puesto_transformacion --elemento <guid> "
+                  "--campo potencia_nominal_kva --valor 75[/]")
+    console.print(f"    [cyan]ptnt escenario-evaluar {esc.escenario_id[:8]}[/]")
+
+
+@app.command()
+def escenario_cambiar(
+    escenario: str = typer.Argument(..., help="Identificador del escenario"),
+    capa: str = typer.Option(..., "--capa"),
+    elemento: str = typer.Option(..., "--elemento", help="guid del elemento"),
+    campo: str = typer.Option(..., "--campo"),
+    valor: str = typer.Option(..., "--valor"),
+    autor: str = typer.Option("", "--autor"),
+    motivo: str = typer.Option("", "--motivo"),
+    desde_paquete: str = typer.Option("", "--desde-paquete",
+                                      help="En vez de un cambio suelto, toma los "
+                                           "del diario de un paquete de campo"),
+    config: str = _CONFIG_OPT,
+):
+    """Acumula un cambio en el escenario. **No toca el modelo oficial.**"""
+
+    from ptnt.workspace import CambioPropuesto, EscenarioError
+
+    cfg = _cargar(config)
+    cambios: list = []
+
+    if desde_paquete:
+        from ptnt.field.gpkg import GeoPackage
+        ruta = Path(desde_paquete)
+        if not ruta.exists():
+            console.print(f"[red]No existe el paquete:[/] {ruta}")
+            raise typer.Exit(code=2)
+        with GeoPackage(ruta) as gp:
+            try:
+                diario = gp.leer("ptnt_cambio")
+            except Exception:
+                diario = []
+        for c in diario:
+            if str(c.get("operacion", "")) not in ("MODIFICAR", "RECONECTAR"):
+                continue
+            cambios.append(CambioPropuesto(
+                capa=str(c.get("capa", "")),
+                elemento_guid=str(c.get("elemento_guid", "")),
+                campo=str(c.get("campo", "") or ""),
+                valor_antes=c.get("valor_antes"),
+                valor_despues=c.get("valor_despues"),
+                operacion=str(c.get("operacion", "MODIFICAR")),
+                origen="CAMPO", autor=str(c.get("autor", "") or ""),
+                motivo=str(c.get("motivo", "") or "")))
+        if not cambios:
+            console.print("[yellow]El paquete no trae cambios evaluables.[/]")
+            raise typer.Exit(code=1)
+    else:
+        cambios.append(CambioPropuesto(
+            capa=capa, elemento_guid=elemento, campo=campo,
+            valor_despues=_convertir(valor), autor=autor, motivo=motivo))
+
+    with _almacen_escenarios(cfg) as alm:
+        try:
+            n = alm.acumular(escenario, cambios)
+        except EscenarioError as exc:
+            console.print(f"[red]{exc}[/]")
+            raise typer.Exit(code=2)
+        total = len(alm.cambios(escenario))
+
+    console.print(f"[green]✓[/] {n} cambio(s) acumulados · "
+                  f"{total} en total en el escenario")
+    console.print("  El modelo oficial sigue intacto. Evalúe con "
+                  f"[cyan]ptnt escenario-evaluar {escenario}[/]")
+
+
+def _convertir(v: str):
+    """Texto de la línea de comandos al tipo que corresponda."""
+
+    for conv in (int, float):
+        try:
+            return conv(v)
+        except ValueError:
+            continue
+    if v.lower() in ("true", "sí", "si"):
+        return 1
+    if v.lower() in ("false", "no"):
+        return 0
+    return v
+
+
+@app.command()
+def escenario_evaluar(
+    escenario: str = typer.Argument(..., help="Identificador del escenario"),
+    usuario: str = typer.Option("", "--usuario",
+                                help="Para comprobar el alcance"),
+    comentario: str = typer.Option("", "--comentario",
+                                   help="Qué se estaba probando"),
+    cabecera: str = typer.Option("", "--cabecera",
+                                 help="CSV de energía de cabecera "
+                                      "(feeder_code,period,kwh_delivered). Sin "
+                                      "él el balance es INDICATIVO"),
+    trifasico: bool = typer.Option(True, "--trifasico/--monofasico"),
+    config: str = _CONFIG_OPT,
+):
+    """Calcula el balance **con los cambios acumulados**, sin publicarlos.
+
+    Cada evaluación queda registrada como una iteración. Las iteraciones no se
+    borran: son la evolución de ese alimentador en el tiempo.
+    """
+
+    from ptnt.workspace import energia_cabecera, evaluar_escenario
+
+    cfg = _cargar(config)
+    medicion = None
+    if cabecera:
+        try:
+            medicion = energia_cabecera(cabecera)
+        except (FileNotFoundError, ValueError) as exc:
+            console.print(f"[red]{exc}[/]")
+            raise typer.Exit(code=2)
+    with _almacen_escenarios(cfg) as alm:
+        esc = alm.obtener(escenario)
+        if esc is None:
+            console.print(f"[red]No existe el escenario '{escenario}'.[/]")
+            raise typer.Exit(code=2)
+        if usuario:
+            from ptnt.security.scope import AlcanceError
+            try:
+                _alcance_de(cfg, usuario).exigir(
+                    esc.unidad_negocio, f"el escenario '{esc.nombre}'")
+            except AlcanceError as exc:
+                console.print(f"[red]{exc}[/]")
+                raise typer.Exit(code=3)
+
+        cambios = alm.cambios(escenario)
+        console.print(f"Evaluando '{esc.nombre}' · {esc.nivel} {esc.entidad} · "
+                      f"{len(cambios)} cambio(s) acumulados…")
+
+        res = evaluar_escenario(esc, cambios, cfg, trifasico=trifasico,
+                                cabecera=medicion)
+        if not res.metricas:
+            for a in res.advertencias:
+                console.print(f"[red]{a}[/]")
+            raise typer.Exit(code=1)
+
+        it = alm.registrar_iteracion(
+            escenario, metricas=res.metricas, n_cambios=len(cambios),
+            hash_topologia=res.hash_topologia,
+            cambios_no_aplicados=[c.to_dict() for c in res.no_aplicados],
+            comentario=comentario)
+
+    tabla = Table(title=f"Iteración {it.n} — {esc.nombre}")
+    tabla.add_column("Indicador"); tabla.add_column("Valor", justify="right")
+    for k, v in res.metricas.items():
+        if isinstance(v, float):
+            texto = f"{v:,.3f}"
+        elif isinstance(v, int):
+            texto = f"{v:,}"
+        else:
+            texto = str(v)
+        tabla.add_row(k.replace("_", " ").capitalize(), texto)
+    console.print(tabla)
+
+    if not res.por_alimentador.empty and len(res.por_alimentador) > 1:
+        console.print(res.por_alimentador[
+            ["alimentador", "pnt_pct", "tipo_balance", "converge"]
+        ].to_string(index=False))
+
+    console.print(f"\n  {res.lectura()}")
+    for a in res.advertencias:
+        console.print(f"[yellow]⚠ {a}[/]")
+    for c in res.controles:
+        console.print(f"[red]✗ {c}[/]")
+    for c in res.no_aplicados[:10]:
+        console.print(f"[yellow]  · {c.capa}/{c.elemento_guid}: {c.motivo}[/]")
+
+    console.print(f"\n  Vea la evolución con [cyan]ptnt escenario-evolucion "
+                  f"{escenario}[/]")
+
+
+@app.command()
+def escenario_evolucion(
+    escenario: str = typer.Argument("", help="Identificador del escenario"),
+    entidad: str = typer.Option("", "--entidad",
+                                help="En vez de un escenario, TODA la historia "
+                                     "de un alimentador o subestación"),
+    usuario: str = typer.Option("", "--usuario"),
+    config: str = _CONFIG_OPT,
+):
+    """Cómo fue cambiando el balance, iteración a iteración.
+
+    Con ``--entidad`` cruza todos los escenarios de ese alimentador: la historia
+    no cabe en uno solo, porque se abre uno nuevo cada vez que se aplica el
+    anterior.
+    """
+
+    cfg = _cargar(config)
+    alcance = _alcance_de(cfg, usuario) if usuario else None
+
+    with _almacen_escenarios(cfg) as alm:
+        if entidad:
+            evo = alm.evolucion_de_entidad(entidad, alcance=alcance)
+            titulo = f"Evolución de {entidad}"
+        elif escenario:
+            evo = alm.evolucion(escenario)
+            esc = alm.obtener(escenario)
+            titulo = f"Evolución de '{esc.nombre if esc else escenario}'"
+        else:
+            console.print("[red]Indique un escenario o --entidad.[/]")
+            raise typer.Exit(code=2)
+
+    if evo.empty:
+        console.print("[yellow]Sin iteraciones todavía.[/] "
+                      "Evalúe con [cyan]ptnt escenario-evaluar[/].")
+        return
+
+    tabla = Table(title=titulo)
+    for c in evo.columns:
+        tabla.add_column(c.replace("_", " ").capitalize(),
+                         justify="right" if evo[c].dtype.kind in "if" else "left")
+    for _, r in evo.iterrows():
+        tabla.add_row(*[f"{v:,.3f}" if isinstance(v, float) else str(v)
+                        for v in r])
+    console.print(tabla)
+
+    if "pnt_pct" in evo.columns and len(evo) > 1:
+        primero, ultimo = float(evo["pnt_pct"].iloc[0]), float(evo["pnt_pct"].iloc[-1])
+        dif = ultimo - primero
+        signo = "bajó" if dif < 0 else "subió"
+        color = "green" if dif < 0 else "yellow"
+        console.print(f"\n  De la primera iteración a la última, la PNT "
+                      f"[{color}]{signo} {abs(dif):.2f} puntos[/] "
+                      f"({primero:.2f} % → {ultimo:.2f} %).")
+
+
+@app.command()
+def escenario_listar(
+    usuario: str = typer.Option(..., "--usuario", help="De quién es el alcance"),
+    todos: bool = typer.Option(False, "--todos",
+                               help="Incluir aplicados y descartados"),
+    config: str = _CONFIG_OPT,
+):
+    """Escenarios que este usuario puede ver."""
+
+    cfg = _cargar(config)
+    alcance = _alcance_de(cfg, usuario)
+
+    with _almacen_escenarios(cfg) as alm:
+        escenarios = alm.listar(alcance=alcance, incluir_cerrados=todos)
+
+    console.print(f"[bold]{usuario}[/] — {alcance.descripcion()}")
+    if not escenarios:
+        console.print("[yellow]Sin escenarios visibles.[/]")
+        return
+
+    tabla = Table(title="Escenarios")
+    for c in ("Id", "Nombre", "Usuario", "Unidad", "Alcance", "Estado"):
+        tabla.add_column(c)
+    for e in escenarios:
+        tabla.add_row(e.escenario_id[:8], e.nombre, e.usuario, e.unidad_negocio,
+                      f"{e.nivel} {e.entidad}", e.estado)
+    console.print(tabla)
+
+
+@app.command()
+def escenario_comparar(
+    escenario: str = typer.Argument(...),
+    desde: int = typer.Option(1, "--desde", help="Número de iteración"),
+    hasta: int = typer.Option(0, "--hasta", help="0 = la última"),
+    config: str = _CONFIG_OPT,
+):
+    """Qué cambió entre dos iteraciones del mismo escenario."""
+
+    from ptnt.workspace import EscenarioError, comparar as _comparar
+
+    cfg = _cargar(config)
+    with _almacen_escenarios(cfg) as alm:
+        its = alm.iteraciones(escenario)
+        if not its:
+            console.print("[yellow]El escenario no tiene iteraciones.[/]")
+            raise typer.Exit(code=1)
+        destino = hasta or its[-1].n
+        try:
+            comp = _comparar(alm, escenario, desde, destino)
+        except EscenarioError as exc:
+            console.print(f"[red]{exc}[/]")
+            raise typer.Exit(code=2)
+
+    df = comp.to_dataframe()
+    if df.empty:
+        console.print("[yellow]Nada numérico que comparar.[/]")
+    else:
+        tabla = Table(title=f"Iteración {comp.desde} → {comp.hasta}")
+        for c in ("Métrica", "Desde", "Hasta", "Diferencia", "Variación %"):
+            tabla.add_column(c, justify="right" if c != "Métrica" else "left")
+        for _, r in df.iterrows():
+            tabla.add_row(str(r["metrica"]), f"{r['desde']:,}", f"{r['hasta']:,}",
+                          f"{r['diferencia']:+,}",
+                          f"{r['variacion_pct']:+.2f}"
+                          if r["variacion_pct"] is not None else "—")
+        console.print(tabla)
+
+    for a in comp.advertencias:
+        console.print(f"[yellow]⚠ {a}[/]")
 
 
 @app.command()

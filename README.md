@@ -74,7 +74,13 @@ datos de la red (esquema **Puesto → Unidad** homologado CNEL EP):
     local. Y cada alimentador, ramal, sector o ruta se juzga **contra los que se
     le parecen**: un rural largo pierde más por física, y compararlo contra el
     promedio de la empresa manda cuadrillas donde no hay nada.
-16. **Publica los resultados en dos interfaces web**: un tablero de análisis para
+16. **Deja probar antes de publicar**: un analista define un alimentador o una
+    subestación, **acumula cambios sin tocar el modelo oficial** y ve el balance
+    al momento. Cada evaluación queda como una iteración que no se sobrescribe,
+    de modo que la evolución de ese alimentador se puede recorrer y comparar en el
+    tiempo. Y cada usuario trabaja **su** unidad de negocio —la matriz las ve
+    todas—, con el control aplicado al leer los datos, no en la pantalla.
+17. **Publica los resultados en dos interfaces web**: un tablero de análisis para
     escritorio (Streamlit, 9 pestañas) y un visor de solo lectura (FastAPI).
 
 > **[Especificación completa](docs/ESPECIFICACION_COMPLETA.md)** — requerimientos,
@@ -90,6 +96,7 @@ datos de la red (esquema **Puesto → Unidad** homologado CNEL EP):
 > **[Probar la app de campo desde Windows](docs/PRUEBAS_CAMPO_WINDOWS.md)** ·
 > **[El ciclo completo](docs/CICLO_COMPLETO.md)** ·
 > **[Recursos y paralelismo](docs/RECURSOS.md)** ·
+> **[Escenarios de trabajo y alcance por unidad](docs/ESCENARIOS.md)** ·
 > **[Aprendizaje continuo](docs/APRENDIZAJE.md)** ·
 > [Focalización de levantamientos](docs/FOCALIZACION.md) ·
 > [Diagnóstico y validación](docs/DIAGNOSTICO.md) ·
@@ -123,6 +130,7 @@ Demostraciones más acotadas:
 python scripts/demo_completa.py            # solo el análisis, 9 pasos
 python scripts/demo_campo_multiusuario.py  # solo el despacho a 3 cuadrillas
 python scripts/demo_recursos.py            # cómo se ajusta al equipo disponible
+python scripts/demo_escenarios.py          # probar cambios sin publicarlos, 12 etapas
 ```
 
 El paso a paso y la interpretación de cada salida están en
@@ -264,9 +272,11 @@ src/ptnt/
 ├── quality/      # reconciliación (§6.1) + motor de reglas R05/R09/R11/R12/R15/R22/R24/P01/P09 (E5)
 ├── store/        # DuckDB (schema.sql) + persistencia
 ├── io/migration.py  # migración origen → modelo canónico (§4.3, round-trip)
-├── security/     # auth (hash), secretos por entorno
+├── security/     # auth (hash), secretos por entorno + alcance por unidad de negocio
+├── workspace/    # escenarios: acumular cambios, evaluar sobre copia, iteraciones
 ├── synth/        # generador de datos (comercial + red radial) con hurtos
 │                 # + scenario.py: escenario ficticio completo con verdad conocida
+│                 # + fuentes.py: fuente con varios alimentadores (subestación entera)
 ├── dashboard/    # tablero Streamlit (escritorio)
 ├── webviewer/    # visor FastAPI (solo lectura)
 ├── pipeline.py       # orquestador comercial
@@ -283,7 +293,7 @@ pytest -m security      # auth, secretos, visor
 pytest --cov=ptnt       # cobertura
 ```
 
-**464 pruebas** del backend en verde. Detalle de qué cubre cada archivo y los
+**492 pruebas** del backend en verde. Detalle de qué cubre cada archivo y los
 resultados de la demostración extremo a extremo en
 [`docs/PRUEBAS.md`](docs/PRUEBAS.md).
 
@@ -339,6 +349,14 @@ técnico con cartografía offline, edición sin señal con snap topológico,
 parcial, sincronización simultánea de varias cuadrillas con control de admisión,
 revisión humana obligatoria y recálculo selectivo de lo que el cambio afecta.
 Ver [`docs/APLICACION_MOVIL.md`](docs/APLICACION_MOVIL.md).
+
+**Escenarios de trabajo y alcance por unidad de negocio**: un analista define un
+alimentador o una subestación, **acumula cambios sin publicarlos** y ve el
+balance al momento; cada evaluación queda como una iteración que no se
+sobrescribe, de modo que la evolución del alimentador en el tiempo se puede
+recorrer y comparar. Los usuarios se asignan a unidades de negocio y la matriz
+las ve todas: el control se aplica al leer los datos —no en la interfaz— y falla
+cerrado. Ver [`docs/ESCENARIOS.md`](docs/ESCENARIOS.md).
 
 **Ajuste a los recursos**: paralelismo acotado por memoria —no solo por
 núcleos— respetando los límites del contenedor (cgroup v1/v2), cola con

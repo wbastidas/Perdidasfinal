@@ -37,6 +37,47 @@ inyecte como variable de entorno del proceso antes de invocar `ptnt`.
 - Roles: `viewer` (visor), `analyst` (tablero), `admin`. El tablero exige rol
   `analyst`/`admin`.
 
+## 2.bis Alcance por unidad de negocio
+
+El rol dice **qué puede hacer** un usuario; el alcance dice **sobre qué datos**.
+Son dos ejes distintos: un `analyst` de Milagro y uno de Guayaquil tienen el mismo
+rol y no deben ver lo mismo.
+
+```bash
+ptnt crear-usuario ana --rol analyst --unidad GUAYAQUIL
+ptnt crear-usuario central --rol admin --matriz
+ptnt usuario-unidad ana --unidad "GUAYAQUIL,LOS_RIOS"
+ptnt usuarios
+```
+
+Tres decisiones de diseño, cada una fijada por pruebas en
+`tests/unit/test_escenarios.py`:
+
+**El control vive en la capa de datos, no en la interfaz.** `Alcance.filtrar` se
+aplica al leer —`escenario-listar` filtra dentro del propio SQL—, de modo que una
+pantalla nueva que se olvide de comprobar no abre un agujero. Toda operación de
+escenario pasa por una única puerta, `exigir_entidad`.
+
+**Falla cerrado.** Un usuario sin unidad asignada no ve *nada*, no lo ve *todo*.
+El criterio contrario convertiría un alta a medias —crear el usuario hoy,
+asignarle la unidad mañana— en el padrón de otra unidad en manos de quien no
+debe. Por la misma razón, un conjunto de datos **sin columna de unidad** se
+devuelve vacío: no es «de todos», es uno que no se puede filtrar, y entregarlo
+entero sería entregar lo que no corresponde.
+
+**Lo que no se puede atribuir, no se entrega.** Una entidad ausente del catálogo
+organizacional se rechaza, y una subestación cuyos alimentadores pertenecen a dos
+unidades distintas se bloquea: es un error del catálogo, no un caso a resolver en
+silencio. El alcance **nunca infiere** la unidad del prefijo del código, aunque
+`organizacion.inferir_si_falta` esté activo para los consolidados — una unidad
+adivinada daría o negaría acceso por una coincidencia de texto.
+
+La matriz (`--matriz`) ve todas las unidades y analiza la que quiera. Un `admin`
+la obtiene por definición: puede crear usuarios, así que podría asignarse
+cualquier unidad; negarle los datos sería teatro.
+
+El detalle operativo está en [`ESCENARIOS.md`](ESCENARIOS.md) §6.
+
 ## 3. Visor web de solo lectura
 
 - **Sin endpoints de escritura.** El visor solo expone `GET`.

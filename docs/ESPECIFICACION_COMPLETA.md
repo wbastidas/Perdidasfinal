@@ -10,7 +10,7 @@ interfaces, y la trazabilidad requerimiento → módulo → prueba.
 | Sistema | PTNT-BAL — Pérdidas No Técnicas y Balance Energético |
 | Ámbito | Distribuidora eléctrica (modelo de datos CNEL EP, esquema Puesto → Unidad) |
 | Stack | Python 3.11+, pydantic v2, pandas/numpy, DuckDB, typer, Streamlit, FastAPI |
-| Estado | 464 pruebas en verde |
+| Estado | 492 pruebas en verde |
 
 ---
 
@@ -249,11 +249,38 @@ dominio), el **módulo** que lo implementa y la **prueba** que lo verifica.
 > una forma silenciosa de mentir con un gráfico. Dos valores calculados con
 > configuraciones distintas no son una tendencia.
 
+## 2.9b Escenarios de trabajo y alcance por unidad de negocio
+
+| ID | Requerimiento | Módulo | Prueba |
+|---|---|---|---|
+| RF-95 | Un usuario **define un alimentador o una subestación** y acumula cambios sobre él **sin publicarlos** | `workspace/escenarios.py` | `test_escenarios` |
+| RF-96 | **Evaluar en el momento**: calcular el balance con los cambios acumulados, sobre una **copia** del modelo | `workspace/evaluacion.py` | `test_escenarios` |
+| RF-97 | Cada evaluación queda como **iteración numerada que no se sobrescribe**; la evolución de una entidad **cruza todos sus escenarios** | `workspace/escenarios.py` | `test_escenarios` |
+| RF-98 | **Comparar dos iteraciones**, advirtiendo si entre ellas cambió la topología o el tipo de balance | `workspace/escenarios.py` | `test_escenarios` |
+| RF-99 | Traer al escenario los cambios del **diario de un paquete de campo** | `cli.py` | `demo_escenarios` |
+| RF-99a | **Usuarios asignados a unidades de negocio**; la **matriz** las ve todas y analiza la que quiera | `security/scope.py` | `test_escenarios` |
+| RF-99b | El alcance se aplica **al leer los datos** (filtro en la consulta), no en la interfaz, y **falla cerrado** | `security/scope.py` | `test_escenarios` |
+| RF-99c | Un cambio **que no se pudo aplicar** se reporta; `CREAR`/`ELIMINAR` se **rechazan** en vez de simularse a medias | `workspace/evaluacion.py` | `test_escenarios` |
+| RF-99d | La evaluación declara el **tipo de balance** (MEDIDO/INDICATIVO), propaga los **controles que saltaron** y admite **energía de cabecera** | `workspace/evaluacion.py` | `test_escenarios` |
+
+> **RF-96 — por qué la copia.** Cuesta memoria y es exactamente lo que se está
+> comprando: probar una configuración que resulta un disparate tiene que ser
+> barato. Si probar implicara publicar, nadie probaría.
+
+> **RF-99b — por qué falla cerrado.** Un usuario sin unidad asignada no ve nada,
+> no lo ve todo. El criterio contrario convertiría un alta a medias en el padrón
+> de otra unidad en manos de quien no debe.
+
+> **RF-99d — por qué el tipo de balance viaja con el número.** Una PNT sin
+> medición de cabecera es una estimación: sirve para comparar una iteración con
+> otra —la estimación es la misma en ambas—, no para declararla como pérdida
+> real. Darla sin decirlo convierte una estimación en un hecho.
+
 ## 2.10 Interfaces
 
 | ID | Requerimiento | Módulo |
 |---|---|---|
-| RF-100 | **CLI** completa (23 comandos) | `cli.py` |
+| RF-100 | **CLI** completa (34 comandos) | `cli.py` |
 | RF-101 | **Tablero de escritorio** (Streamlit) con 8 pestañas | `dashboard/app.py` |
 | RF-102 | **Visor web de solo lectura** (FastAPI) para consulta por terceros | `webviewer/app.py` |
 | RF-103 | Pestaña de **unidad de negocio y subestación** | `dashboard/app.py` |
@@ -532,10 +559,11 @@ src/ptnt/
 ├── quality/      Reconciliación + motor de reglas
 ├── report/       Informes HTML autocontenidos + gráficos SVG + PDF
 ├── store/        DuckDB + histórico de balance
-├── security/     Auth (hash), secretos por entorno
+├── security/     Auth (hash), secretos por entorno, alcance por unidad de negocio
 ├── runtime/      Recursos, ejecutor con cola y control de admisión
+├── workspace/    Escenarios: acumular cambios, evaluar sobre copia, iteraciones
 ├── field/        Trabajo de campo (ver abajo)
-├── synth/        Generadores de escenario con verdad conocida
+├── synth/        Generadores de escenario con verdad conocida (incl. fuentes multi-alimentador)
 ├── dashboard/    Tablero Streamlit (8 pestañas)
 ├── webviewer/    Visor FastAPI de solo lectura
 ├── pipeline.py       Orquestador comercial
@@ -636,6 +664,16 @@ mobile/app/src/main/java/ec/cnel/ptnt/field/
 | `ptnt campo-paquetes` | Genera **todos** los paquetes de una vez |
 | `ptnt campo-servir` | API de sincronización móvil |
 | `ptnt campo-revisar` | Revisa un lote y determina qué recalcular |
+| `ptnt campo-aprender` | Incorpora lo que la cuadrilla encontró a los casos confirmados |
+| `ptnt campo-simular` | Hace en el paquete lo que haría el técnico, **sin dispositivo** |
+| `ptnt pares` | Compara cada entidad contra las que **se le parecen** |
+| `ptnt usuarios` / `ptnt usuario-unidad` | Alcance de cada usuario por unidad de negocio |
+| `ptnt escenario-abrir` | Define un alimentador o subestación **para probar cambios** |
+| `ptnt escenario-cambiar` | Acumula un cambio (o el diario de un paquete de campo) |
+| `ptnt escenario-evaluar` | **Balance al momento** con los cambios, sin publicarlos |
+| `ptnt escenario-evolucion` | Iteración a iteración, la evolución de la entidad |
+| `ptnt escenario-comparar` | Qué cambió entre dos iteraciones |
+| `ptnt escenario-listar` | Escenarios que ese usuario alcanza |
 
 ---
 
@@ -670,6 +708,14 @@ incorrectos.
 | 22 | Un paquete de campo por **técnico**, nunca por orden | Snap roto, elementos duplicados y ediciones en conflicto irresolubles |
 | 23 | Una campaña que no persigue energía lleva **0 en recuperable** | Se la evalúa por kWh, parece inútil y deja de hacerse |
 | 24 | Nada entra al modelo **sin revisión humana** | El trabajo de campo degradaría el SIG en vez de mejorarlo |
+| 25 | Un escenario se evalúa sobre una **copia**; el modelo oficial no se toca | Probar una idea la publicaría |
+| 26 | Las **iteraciones no se sobrescriben** | Se pierde la evolución, que es justo lo que se quería ver |
+| 27 | Un escenario **aplicado** no admite cambios nuevos | El historial diría una cosa y el modelo otra |
+| 28 | Un usuario **sin unidad asignada no ve nada** | Un alta a medias entregaría el padrón de otra unidad |
+| 29 | Un conjunto **sin columna de unidad** se devuelve vacío | No es «de todos»: es uno que no se puede filtrar |
+| 30 | El alcance **nunca infiere** la unidad del prefijo del código | Se daría o negaría acceso por una coincidencia de texto |
+| 31 | Al migrar un alimentador, puestos y clientes se **recortan a sus nodos** | Con varios alimentadores en la fuente, el balance sumaría energía facturada ajena |
+| 32 | Un cambio que **no se pudo aplicar** se reporta con el número | El analista decidiría creyendo que probó algo que no probó |
 
 ---
 
@@ -753,7 +799,7 @@ hace fallar el arranque.
 | `synth/escenario_costa.py` | 20 000 clientes | Prueba a escala, 12 alimentadores, informes PDF |
 
 ```bash
-pytest                                    # 464 pruebas
+pytest                                    # 492 pruebas
 python scripts/demo_completa.py           # análisis, 9 pasos
 python scripts/demo_ciclo_completo.py     # CICLO ENTERO, 15 etapas, 22 comprobaciones
 python scripts/demo_campo_multiusuario.py # despacho a 3 cuadrillas
@@ -777,7 +823,7 @@ termina con código de salida distinto de cero si alguna comprobación falla.
 | **Mecanismo de promedio** multi-mes | RF-10…RF-12 | ✅ |
 | Identificar clientes con **hurto** | S1–S9, RF-30…RF-32 | ✅ |
 | Arquitectura, implementación Windows, proceso | `docs/ARQUITECTURA.md`, `INSTALACION_WINDOWS.md`, `PROCESO.md` | ✅ |
-| **Documentado** + pruebas de integración y seguridad | 464 pruebas, 19 documentos | ✅ |
+| **Documentado** + pruebas de integración y seguridad | 492 pruebas, 19 documentos | ✅ |
 | **Interfaz web** para escritorio y para terceros | RF-101, RF-102 | ✅ |
 | Esquema **Puesto → Unidad** | RF-40, §3.1 | ✅ |
 | **CLIRLSCOD** como agrupador | RF-23, RF-73 | ✅ |
