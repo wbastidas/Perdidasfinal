@@ -118,7 +118,8 @@ crearla a mano.
 | 5 | **Protege las versiones que ArcGIS fijó** | Ver abajo — es el paso que salva `arcpy` |
 | 6 | Instala PTNT-BAL con sus dependencias | |
 | 7 | Genera la clave de sesiones y las carpetas | |
-| 8 | **Verifica que quedó operativo** | Importa, valida la configuración y corre las 492 pruebas |
+| 8 | **Verifica que quedó operativo** | Importa, valida la configuración y corre las 517 pruebas |
+| 9 | **Deja la actualización automática** | `ptnt tarea-crear` entrega la línea de `schtasks` para el Programador de Windows (ver [INTERFACES.md](INTERFACES.md) §3) |
 
 Tarda entre 5 y 15 minutos según la red.
 

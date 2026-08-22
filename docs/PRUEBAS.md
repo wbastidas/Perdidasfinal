@@ -42,6 +42,8 @@ pytest --cov=ptnt --cov-report=term-missing   # con cobertura
 
 | `test_escenarios.py` | **Alcance por unidad de negocio** (un usuario sin unidad no ve nada, cada unidad lo suyo, la matriz todas, **lo que no está en el catálogo no se entrega**, subestación repartida entre dos unidades se bloquea, **un conjunto sin columna de unidad se devuelve vacío**, el administrador ve todas sin declararlo, el alcance sobrevive al guardado, un archivo de usuarios anterior sigue abriendo), **escenarios** (acumular no toca el modelo, **cada evaluación es una iteración que se conserva**, la comparación avisa si cambió la topología, un escenario aplicado no admite cambios, el listado respeta el alcance, la evolución de una entidad cruza escenarios), **evaluación** (se aplica sobre una copia, el elemento ausente se reporta, los clientes se encuentran dentro de listas, **CREAR/ELIMINAR no se evalúan a medias**, **el porcentaje se recalcula y no se promedia**, lo no aplicado sale en la lectura, **el tipo de balance viaja con la iteración y los controles llegan al usuario**, **la cabecera incompleta no pasa por medida**, la comparación avisa si cambió el tipo de balance, lectura del CSV de cabecera) |
 
+| `test_jobs.py` | **Ejecución** (los pasos se ordenan solos, un paso inexistente se dice con los que hay, **lo que el plan da por hecho es aviso y no error**, todos los planes preparados son ejecutables, una bandera booleana se pone o no se pone, **un fallo detiene la cadena**, **la bitácora se escribe mientras corre**, el resumen deja fuera las trazas de registro, un paso que no se puede lanzar no tumba la corrida), **programación** (una tarea sin pasos no se acepta, **el día 29 al 31 se rechaza**, la hora mal escrita se dice con el formato, cuándo toca la próxima vez, **una tarea recién creada no se saltó nada**, una que de verdad se saltó se reporta, **las órdenes generadas llevan rutas absolutas**, el día de la semana llega bien a cada planificador, las tareas sobreviven al reinicio, una tarea corrupta no impide leer las demás) |
+
 **Propiedades verificadas (hypothesis):**
 - `S ≥ P` para todo P ≥ 0 y cosφ ∈ [0.5, 1].
 - `FC(1) = A + B = 1`; `FC` monótona decreciente; `FC ∈ [mínimo, 1]`.
@@ -232,6 +234,26 @@ Los pasos 8 y 9 son los que se corresponden con los tests de
 `test_locations_versioning.py`: la demo los muestra sobre datos realistas y los
 tests los fijan como garantía de regresión.
 
+### El tablero, ejecutado de verdad
+
+`tests/integration/test_tablero.py` ejecuta el tablero con `AppTest`, que corre
+el guion igual que lo haría un navegador. Comprobar que el servidor responde
+HTTP 200 no prueba nada: Streamlit ejecuta el script al conectarse, y es ahí
+donde revienta.
+
+Seis pruebas fijan lo que más importa: que **arranca sin excepción**, que una
+credencial mala no deja pasar, que **cada analista ve solo su unidad de negocio**
+(los resultados traen todas dentro y el tablero los lee tal cual), que la matriz
+las ve todas y puede acotar a una, que un usuario **sin unidad no ve nada y se le
+explica por qué**, y que sin resultados calculados se ofrece el botón de empezar
+en vez de un comando.
+
+Dos defectos reales aparecieron al escribirlas: el tablero **reventaba con
+`IndexError`** cuando el ranking filtrado quedaba vacío —un analista cuya unidad
+aún no se ha cargado tumbaba la aplicación entera—, y las **razones de sospecha
+nunca se mostraban**, porque llegan del CSV como texto y se comprobaba si eran
+una lista.
+
 ### Escenarios de trabajo y alcance por unidad
 
 `scripts/demo_escenarios.py` recorre **12 etapas y 20 comprobaciones** usando la
@@ -256,7 +278,7 @@ restando dos números de garantía distinta.
 ## Estado actual
 
 ```
-492 passed
+517 passed
 ```
 
 Cobertura del núcleo de dominio (objetivo de la especificación ≥ 85 %):

@@ -80,8 +80,13 @@ datos de la red (esquema **Puesto → Unidad** homologado CNEL EP):
     de modo que la evolución de ese alimentador se puede recorrer y comparar en el
     tiempo. Y cada usuario trabaja **su** unidad de negocio —la matriz las ve
     todas—, con el control aplicado al leer los datos, no en la pantalla.
-17. **Publica los resultados en dos interfaces web**: un tablero de análisis para
-    escritorio (Streamlit, 9 pestañas) y un visor de solo lectura (FastAPI).
+17. **Se opera desde el navegador, sin escribir comandos**: el tablero lanza el
+    proceso, sigue su avance, muestra los resultados, prepara el trabajo de campo
+    y define las **actualizaciones automáticas** que el Programador de tareas de
+    Windows ejecuta de madrugada. La línea de comandos sigue estando, y hace
+    exactamente lo mismo: es el único camino de ejecución.
+18. **Publica los resultados en dos interfaces web**: un tablero de análisis para
+    escritorio (Streamlit, 12 pestañas) y un visor de solo lectura (FastAPI).
 
 > **[Especificación completa](docs/ESPECIFICACION_COMPLETA.md)** — requerimientos,
 > campos y arquitectura de información para replicar el sistema.
@@ -96,7 +101,9 @@ datos de la red (esquema **Puesto → Unidad** homologado CNEL EP):
 > **[Probar la app de campo desde Windows](docs/PRUEBAS_CAMPO_WINDOWS.md)** ·
 > **[El ciclo completo](docs/CICLO_COMPLETO.md)** ·
 > **[Recursos y paralelismo](docs/RECURSOS.md)** ·
+> **[Los cálculos y su fundamento científico](docs/CALCULOS.md)** ·
 > **[Escenarios de trabajo y alcance por unidad](docs/ESCENARIOS.md)** ·
+> **[Ejecución e interfaces de usuario](docs/INTERFACES.md)** ·
 > **[Aprendizaje continuo](docs/APRENDIZAJE.md)** ·
 > [Focalización de levantamientos](docs/FOCALIZACION.md) ·
 > [Diagnóstico y validación](docs/DIAGNOSTICO.md) ·
@@ -293,7 +300,7 @@ pytest -m security      # auth, secretos, visor
 pytest --cov=ptnt       # cobertura
 ```
 
-**492 pruebas** del backend en verde. Detalle de qué cubre cada archivo y los
+**517 pruebas** del backend en verde. Detalle de qué cubre cada archivo y los
 resultados de la demostración extremo a extremo en
 [`docs/PRUEBAS.md`](docs/PRUEBAS.md).
 

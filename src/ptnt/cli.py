@@ -1921,6 +1921,306 @@ def escenario_evolucion(
                       f"({primero:.2f} % → {ultimo:.2f} %).")
 
 
+def _bitacora(cfg):
+    from ptnt.jobs import Bitacora
+    return Bitacora(Path(cfg.rutas.salidas) / "ejecuciones")
+
+
+def _almacen_tareas(cfg):
+    from ptnt.jobs import AlmacenProgramaciones
+    return AlmacenProgramaciones(Path(cfg.rutas.salidas) / "tareas.json")
+
+
+@app.command()
+def pasos(config: str = _CONFIG_OPT):
+    """Qué se puede ejecutar, en lenguaje llano y en orden."""
+
+    from ptnt.jobs import PASOS, PLANES
+
+    _cargar(config)
+    tabla = Table(title="Pasos del proceso")
+    for c in ("Clave", "Paso", "Para qué sirve", "Necesita antes", "≈ min"):
+        tabla.add_column(c, overflow="fold")
+    for p in PASOS:
+        tabla.add_row(p.clave, p.titulo, p.para_que,
+                      ", ".join(p.necesita) or "—", str(p.minutos_tipicos))
+    console.print(tabla)
+
+    console.print("\n[bold]Planes preparados[/] (para no tener que elegir uno a uno):")
+    for clave, (titulo, plan, expl) in PLANES.items():
+        console.print(f"  [cyan]{clave}[/] — {titulo}: {expl}")
+        console.print(f"      {' → '.join(plan)}")
+    console.print("\nEjecute uno con "
+                  "[cyan]ptnt ejecutar --plan actualizar[/]")
+
+
+@app.command()
+def ejecutar(
+    plan: str = typer.Option("", "--plan",
+                             help="completo | actualizar | balance | campo"),
+    paso: list[str] = typer.Option(None, "--paso",
+                                   help="Pasos sueltos, repetible"),
+    csv: str = typer.Option("", "--csv", help="Archivo de consumos"),
+    feeder: str = typer.Option("", "--feeder", help="Alimentador concreto"),
+    cabecera: str = typer.Option("", "--cabecera", help="Medición de cabecera"),
+    multados: str = typer.Option("", "--multados", help="Base de multados"),
+    usuario: str = typer.Option("", "--usuario", help="Quién lo lanza"),
+    nombre: str = typer.Option("", "--nombre", help="Cómo llamar a esta corrida"),
+    id_ejecucion: str = typer.Option("", "--id", hidden=True,
+                                     help="Identificador fijado por quien lanza"),
+    config: str = _CONFIG_OPT,
+):
+    """Ejecuta el proceso completo o los pasos que se indiquen, con bitácora.
+
+    Es el mismo camino que usan el botón del tablero y las tareas programadas:
+    no hay dos formas de calcular que puedan separarse con el tiempo.
+    """
+
+    from ptnt.jobs import PLANES, ejecutar_plan, resolver_plan, supuestos_previos
+
+    cfg = _cargar(config)
+    if plan:
+        if plan not in PLANES:
+            console.print(f"[red]No existe el plan '{plan}'.[/] "
+                          f"Hay: {', '.join(PLANES)}")
+            raise typer.Exit(code=2)
+        claves = list(PLANES[plan][1])
+    elif paso:
+        claves = list(paso)
+    else:
+        console.print("[red]Indique --plan o al menos un --paso.[/] "
+                      "Vea [cyan]ptnt pasos[/].")
+        raise typer.Exit(code=2)
+
+    opciones = {
+        "migrar": {"feeder": feeder},
+        "analizar": {"csv": csv},
+        "analizar_red": {"trifasico": True},
+        "diagnostico": {"cabecera": cabecera, "multados": multados},
+    }
+
+    try:
+        lista = resolver_plan(claves)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=2)
+
+    console.print(f"[bold]Se van a ejecutar {len(lista)} paso(s)[/] "
+                  f"(≈ {sum(p.minutos_tipicos for p in lista)} min):")
+    for p in lista:
+        console.print(f"  · {p.titulo}")
+    for aviso in supuestos_previos(claves):
+        console.print(f"[yellow]⚠ {aviso}[/]")
+    console.print()
+
+    def avanzar(ej):
+        actual = next((p for p in ej.pasos if p.estado == "EN_CURSO"), None)
+        if actual and not getattr(avanzar, "_ultimo", None) == actual.clave:
+            avanzar._ultimo = actual.clave
+            console.print(f"[cyan]▶[/] {actual.titulo}…")
+
+    ej = ejecutar_plan(claves, config, opciones=opciones,
+                       bitacora=_bitacora(cfg), usuario=usuario,
+                       nombre_plan=nombre or plan or "pasos sueltos",
+                       ejecucion_id=id_ejecucion, al_avanzar=avanzar)
+
+    tabla = Table(title=f"Resultado — {ej.lectura()}")
+    for c in ("Paso", "Estado", "Segundos", "Resumen"):
+        tabla.add_column(c, overflow="fold")
+    for p in ej.pasos:
+        color = {"CORRECTO": "green", "FALLO": "red",
+                 "OMITIDO": "yellow"}.get(p.estado, "white")
+        tabla.add_row(p.titulo, f"[{color}]{p.estado}[/]",
+                      f"{p.segundos:,.1f}", p.resumen or "—")
+    console.print(tabla)
+
+    if not ej.correcto:
+        fallo = next((p for p in ej.pasos if p.estado == "FALLO"), None)
+        if fallo:
+            console.print(f"\n[red]Detalle de «{fallo.titulo}»:[/]")
+            console.print(fallo.salida[-2000:])
+        raise typer.Exit(code=1)
+    console.print(f"\n[green]✓[/] Listo. Bitácora: "
+                  f"{_bitacora(cfg).ruta(ej.ejecucion_id)}")
+
+
+@app.command()
+def ejecuciones(
+    cuantas: int = typer.Option(10, "--cuantas"),
+    config: str = _CONFIG_OPT,
+):
+    """Las últimas corridas: cuándo, quién y cómo acabaron."""
+
+    cfg = _cargar(config)
+    ultimas = _bitacora(cfg).ultimas(cuantas)
+    if not ultimas:
+        console.print("[yellow]Todavía no se ha ejecutado nada.[/] "
+                      "Pruebe [cyan]ptnt ejecutar --plan actualizar[/].")
+        return
+
+    tabla = Table(title="Últimas ejecuciones")
+    for c in ("Inicio", "Plan", "Origen", "Usuario", "Estado", "Lectura"):
+        tabla.add_column(c, overflow="fold")
+    for e in ultimas:
+        color = {"CORRECTO": "green", "FALLO": "red"}.get(e.get("estado"), "yellow")
+        tabla.add_row(e.get("inicio", ""), e.get("plan", ""), e.get("origen", ""),
+                      e.get("usuario", "") or "—",
+                      f"[{color}]{e.get('estado')}[/]", e.get("lectura", ""))
+    console.print(tabla)
+
+
+@app.command()
+def tarea_crear(
+    nombre: str = typer.Argument(..., help="Nombre de la tarea"),
+    plan: str = typer.Option("actualizar", "--plan",
+                             help="completo | actualizar | balance | campo"),
+    frecuencia: str = typer.Option("DIARIA", "--frecuencia",
+                                   help="DIARIA | SEMANAL | MENSUAL"),
+    hora: str = typer.Option("03:00", "--hora", help="HH:MM"),
+    dia_semana: str = typer.Option("LUN", "--dia-semana", help="LUN…DOM"),
+    dia_mes: int = typer.Option(1, "--dia-mes", help="1 a 28"),
+    csv: str = typer.Option("", "--csv", help="Archivo de consumos"),
+    descripcion: str = typer.Option("", "--descripcion"),
+    reemplazar: bool = typer.Option(False, "--reemplazar"),
+    config: str = _CONFIG_OPT,
+):
+    """Define una actualización periódica y dice cómo registrarla en el sistema.
+
+    **No deja nada corriendo**: la programación se delega al Programador de
+    tareas de Windows (o a cron), que ya sobrevive a los reinicios. Este comando
+    guarda la definición y entrega la orden exacta que hay que registrar allí.
+    """
+
+    from ptnt.jobs import PLANES, Programacion, ProgramacionError, instrucciones
+
+    cfg = _cargar(config)
+    if plan not in PLANES:
+        console.print(f"[red]No existe el plan '{plan}'.[/] Hay: {', '.join(PLANES)}")
+        raise typer.Exit(code=2)
+
+    try:
+        tarea = Programacion(
+            nombre=nombre, plan=list(PLANES[plan][1]), frecuencia=frecuencia.upper(),
+            hora=hora, dia_semana=dia_semana.upper(), dia_mes=dia_mes,
+            opciones={"analizar": {"csv": csv}} if csv else {},
+            descripcion=descripcion or PLANES[plan][2])
+        _almacen_tareas(cfg).agregar(tarea, reemplazar=reemplazar)
+    except ProgramacionError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=2)
+
+    console.print(f"[green]✓[/] Tarea '{nombre}' guardada: {tarea.cuando()}")
+    console.print(f"  Próxima vez que tocaría: "
+                  f"[cyan]{tarea.proxima():%d/%m/%Y %H:%M}[/]\n")
+    console.print(instrucciones(tarea, config, carpeta_trabajo=str(Path.cwd())))
+
+
+@app.command()
+def tarea_listar(config: str = _CONFIG_OPT):
+    """Las tareas programadas, y si alguna se saltó su cita."""
+
+    from datetime import datetime
+
+    cfg = _cargar(config)
+    tareas = _almacen_tareas(cfg).listar()
+    if not tareas:
+        console.print("[yellow]No hay tareas programadas.[/] "
+                      "Cree una con [cyan]ptnt tarea-crear actualizacion-diaria[/].")
+        return
+
+    corridas = _bitacora(cfg).ultimas(200)
+    tabla = Table(title="Tareas programadas")
+    for c in ("Tarea", "Cuándo", "Activa", "Última vez", "Próxima", "Estado"):
+        tabla.add_column(c, overflow="fold")
+
+    for t in tareas:
+        propias = [e for e in corridas if e.get("plan") == t.nombre]
+        ultima = propias[0].get("inicio", "") if propias else ""
+        ult_dt = None
+        if ultima:
+            try:
+                ult_dt = datetime.fromisoformat(ultima)
+            except ValueError:
+                ult_dt = None
+
+        if not t.activa:
+            estado = "[dim]pausada[/]"
+        elif t.vencida(ult_dt):
+            # El planificador sabe si lanzó el proceso; no sabe si el proceso
+            # hizo lo que debía. Esto es lo segundo.
+            estado = "[red]SE SALTÓ[/]"
+        else:
+            estado = "[green]al día[/]"
+
+        tabla.add_row(t.nombre, t.cuando(), "sí" if t.activa else "no",
+                      ultima or "nunca", f"{t.proxima():%d/%m %H:%M}", estado)
+    console.print(tabla)
+    console.print("\nVea cómo registrar una en el sistema con "
+                  "[cyan]ptnt tarea-instrucciones <nombre>[/]")
+
+
+@app.command()
+def tarea_instrucciones(
+    nombre: str = typer.Argument(...),
+    config: str = _CONFIG_OPT,
+):
+    """El paso a paso para dejar la tarea registrada en el sistema operativo."""
+
+    from ptnt.jobs import instrucciones
+
+    cfg = _cargar(config)
+    t = _almacen_tareas(cfg).obtener(nombre)
+    if t is None:
+        console.print(f"[red]No existe la tarea '{nombre}'.[/]")
+        raise typer.Exit(code=2)
+    console.print(instrucciones(t, config, carpeta_trabajo=str(Path.cwd())))
+
+
+@app.command()
+def tarea_ejecutar(
+    nombre: str = typer.Argument(...),
+    config: str = _CONFIG_OPT,
+):
+    """Ejecuta una tarea programada. **Es lo que invoca el planificador.**"""
+
+    from ptnt.jobs import ejecutar_plan
+
+    cfg = _cargar(config)
+    t = _almacen_tareas(cfg).obtener(nombre)
+    if t is None:
+        console.print(f"[red]No existe la tarea '{nombre}'.[/]")
+        raise typer.Exit(code=2)
+    if not t.activa:
+        console.print(f"[yellow]La tarea '{nombre}' está pausada; no se ejecuta.[/]")
+        return
+
+    ej = ejecutar_plan(t.plan, config, opciones=t.opciones,
+                       bitacora=_bitacora(cfg), origen="PROGRAMADA",
+                       usuario=f"tarea:{nombre}", nombre_plan=nombre)
+    console.print(ej.lectura())
+    if not ej.correcto:
+        # Código distinto de cero para que el Programador de Windows lo marque
+        # como fallida y se vea en su propio registro, no solo en el nuestro.
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def tarea_quitar(
+    nombre: str = typer.Argument(...),
+    config: str = _CONFIG_OPT,
+):
+    """Borra la definición. **No quita la tarea del Programador de Windows.**"""
+
+    cfg = _cargar(config)
+    if not _almacen_tareas(cfg).quitar(nombre):
+        console.print(f"[red]No existe la tarea '{nombre}'.[/]")
+        raise typer.Exit(code=2)
+    console.print(f"[green]✓[/] Definición de '{nombre}' eliminada.")
+    console.print("[yellow]Ojo:[/] si la registró en el Programador de Windows, "
+                  "quítela también allí:")
+    console.print(f'  [cyan]schtasks /Delete /TN "PTNT-BAL\\{nombre}" /F[/]')
+
+
 @app.command()
 def escenario_listar(
     usuario: str = typer.Option(..., "--usuario", help="De quién es el alcance"),
