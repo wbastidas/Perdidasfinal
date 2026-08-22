@@ -40,6 +40,8 @@ pytest --cov=ptnt --cov-report=term-missing   # con cobertura
 | `test_ciclo_campo_completo.py` *(integración)* | **Contrato móvil ↔ backend** verificado con el simulador: lo que la app escribe el backend lo lee y lo entiende (autor, precisión, secuencia sin huecos), **mover arrastra la acometida y llega marcado como propagado**, una reconexión recorre el ciclo hasta el recálculo de las dos zonas, **dos jornadas no duplican el histórico**, y eliminar un puesto con clientes se impide en el dispositivo |
 | `test_locations_versioning.py` | **Identidad geográfica estable** (código determinista, agrupa coordenadas cercanas, sectores conservan ubicación al cargar datos nuevos y ante reordenamiento), **registro persistente** (acumula priorizaciones sin inflar por re-ejecución, reincidencia, cierre por inspección, persistencia en disco), **versionado de topología** (alta, sin cambio, cada hash reacciona solo a su dominio, invalidación selectiva por tipo de cambio, historial, **las ubicaciones sobreviven al cambio de red**) |
 
+| `test_escenarios.py` | **Alcance por unidad de negocio** (un usuario sin unidad no ve nada, cada unidad lo suyo, la matriz todas, **lo que no está en el catálogo no se entrega**, subestación repartida entre dos unidades se bloquea, **un conjunto sin columna de unidad se devuelve vacío**, el administrador ve todas sin declararlo, el alcance sobrevive al guardado, un archivo de usuarios anterior sigue abriendo), **escenarios** (acumular no toca el modelo, **cada evaluación es una iteración que se conserva**, la comparación avisa si cambió la topología, un escenario aplicado no admite cambios, el listado respeta el alcance, la evolución de una entidad cruza escenarios), **evaluación** (se aplica sobre una copia, el elemento ausente se reporta, los clientes se encuentran dentro de listas, **CREAR/ELIMINAR no se evalúan a medias**, **el porcentaje se recalcula y no se promedia**, lo no aplicado sale en la lectura, **el tipo de balance viaja con la iteración y los controles llegan al usuario**, **la cabecera incompleta no pasa por medida**, la comparación avisa si cambió el tipo de balance, lectura del CSV de cabecera) |
+
 **Propiedades verificadas (hypothesis):**
 - `S ≥ P` para todo P ≥ 0 y cosφ ∈ [0.5, 1].
 - `FC(1) = A + B = 1`; `FC` monótona decreciente; `FC ∈ [mínimo, 1]`.
@@ -230,10 +232,31 @@ Los pasos 8 y 9 son los que se corresponden con los tests de
 `test_locations_versioning.py`: la demo los muestra sobre datos realistas y los
 tests los fijan como garantía de regresión.
 
+### Escenarios de trabajo y alcance por unidad
+
+`scripts/demo_escenarios.py` recorre **12 etapas y 20 comprobaciones** usando la
+CLI real contra una fuente sintética de cinco alimentadores en tres unidades de
+negocio:
+
+```bash
+python scripts/demo_escenarios.py          # ~25 s
+```
+
+Muestra el ciclo completo —abrir, acumular, evaluar, iterar, comparar— y, en las
+tres últimas etapas, lo que un usuario de otra unidad **no** puede hacer: no
+puede abrir un escenario sobre un alimentador ajeno, no puede evaluarlo, y no lo
+ve siquiera en el listado. La matriz sí ve los de todas y puede trabajar sobre
+cualquiera.
+
+Las etapas 6 y 7 son el mismo escenario evaluado sin y con energía de cabecera:
+la PNT pasa de `INDICATIVO` (estimada, con `C01` saltando por PNT negativa) a
+`MEDIDO`, y la comparación entre ambas iteraciones advierte de que se están
+restando dos números de garantía distinta.
+
 ## Estado actual
 
 ```
-464 passed
+492 passed
 ```
 
 Cobertura del núcleo de dominio (objetivo de la especificación ≥ 85 %):

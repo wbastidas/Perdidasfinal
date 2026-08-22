@@ -238,3 +238,52 @@ def test_migracion_desde_duckdb(tmp_path):
     assert len(migrado.edges) == len(net.model.edges)
     assert len(migrado.transformer_sites) == len(net.model.transformer_sites)
     assert migrado.source_node == net.model.source_node
+
+
+@pytest.mark.unit
+def test_migracion_no_mezcla_alimentadores(tmp_path):
+    """Con dos alimentadores en la misma fuente, cada uno migra solo lo suyo.
+
+    Es el caso normal en cuanto se trabaja una subestación entera. Si los puestos
+    y clientes del otro alimentador se colaran, el flujo los ignoraría por
+    inalcanzables pero el balance sí sumaría su energía: la PNT saldría mal y
+    nada avisaría.
+    """
+
+    pytest.importorskip("duckdb")
+    from ptnt.config.loader import load_config
+    from ptnt.io.migration import MigrationError, migrate_network
+    from ptnt.store.database import Database
+    from ptnt.synth.fuentes import fuente_multialimentador
+
+    cfg = load_config("config/base.yaml")
+    cfg.rutas.duckdb = str(tmp_path / "ptnt.duckdb")
+    for f in cfg.fuentes:
+        if f.nombre == "resultados_local":
+            f.ruta = cfg.rutas.duckdb
+
+    redes = fuente_multialimentador(
+        cfg.rutas.duckdb, ["F001", "F002"], n_transformers=4, customers_per_tx=6)
+
+    for codigo, original in redes.items():
+        migrado = migrate_network(cfg, feeder_code=codigo)
+        assert migrado.feeder_code == codigo
+        assert len(migrado.edges) == len(original.edges)
+        assert len(migrado.transformer_sites) == len(original.transformer_sites)
+        # ni un cliente de más: el del otro alimentador no está
+        n_cli = sum(len(v) for v in migrado.customer_nodes.values())
+        assert n_cli == sum(len(v) for v in original.customer_nodes.values())
+        assert all(n in {e.from_node for e in migrado.edges} |
+                   {e.to_node for e in migrado.edges}
+                   for n in migrado.customer_nodes)
+
+    # Y un alimentador que no está en la fuente falla diciéndolo, en vez de
+    # devolver una red vacía que el resto del sistema trataría como válida.
+    with pytest.raises(MigrationError, match="F999"):
+        migrate_network(cfg, feeder_code="F999")
+
+    with Database(cfg.rutas.duckdb) as db:
+        total = db._con.execute(
+            "SELECT COUNT(*) FROM silver.customer_nodes").fetchone()[0]
+    assert total == sum(sum(len(v) for v in r.customer_nodes.values())
+                        for r in redes.values())

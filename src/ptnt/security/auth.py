@@ -13,7 +13,7 @@ import hmac
 import json
 import os
 import secrets as _secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 try:  # bcrypt es preferible; opcional
@@ -77,6 +77,12 @@ class User:
     password_hash: str
     role: str = "viewer"  # viewer | analyst | admin
     disabled: bool = False
+    # Unidades de negocio que puede ver. Vacío **no** significa «todas»: un
+    # usuario sin unidad asignada no ve nada, y eso es deliberado. Lo contrario
+    # convierte un alta a medias en una fuga del padrón de otra unidad.
+    unidades: list[str] = field(default_factory=list)
+    # La oficina central ve todas las unidades y elige cuál analizar.
+    matriz: bool = False
 
 
 class UserStore:
@@ -94,9 +100,14 @@ class UserStore:
 
     def _load(self) -> None:
         data = json.loads(self.ruta.read_text(encoding="utf-8"))
-        self._users = {
-            u["username"]: User(**u) for u in data.get("usuarios", [])
-        }
+        # Se filtran las claves desconocidas en vez de reventar: un archivo de
+        # una versión anterior no puede dejar a nadie sin poder entrar, y uno de
+        # una versión posterior tampoco.
+        campos = {f.name for f in fields(User)}
+        self._users = {}
+        for u in data.get("usuarios", []):
+            datos = {k: v for k, v in u.items() if k in campos}
+            self._users[datos["username"]] = User(**datos)
 
     def _save(self) -> None:
         self.ruta.parent.mkdir(parents=True, exist_ok=True)
@@ -107,6 +118,8 @@ class UserStore:
                     "password_hash": u.password_hash,
                     "role": u.role,
                     "disabled": u.disabled,
+                    "unidades": list(u.unidades),
+                    "matriz": u.matriz,
                 }
                 for u in self._users.values()
             ]
@@ -119,13 +132,41 @@ class UserStore:
         except (OSError, NotImplementedError):  # pragma: no cover - Windows
             pass
 
-    def add_user(self, username: str, password: str, role: str = "viewer") -> None:
+    def add_user(self, username: str, password: str, role: str = "viewer",
+                 *, unidades: list[str] | None = None,
+                 matriz: bool = False) -> None:
         if role not in {"viewer", "analyst", "admin"}:
             raise AuthError(f"rol inválido: {role}")
         if username in self._users:
             raise AuthError(f"el usuario '{username}' ya existe")
-        self._users[username] = User(username, hash_password(password), role)
+        # Un administrador ve todas las unidades por definición: puede crear
+        # usuarios, así que podría asignarse cualquiera. Negarle los datos sería
+        # teatro, y obligar a declararlo cada vez, ruido.
+        if role == "admin" and not unidades:
+            matriz = True
+        # No se rechaza el alta sin unidad: crear primero y asignar después es
+        # un flujo legítimo, y el control de verdad está donde se leen los datos
+        # —un usuario sin alcance no ve nada—. Quien crea desde la CLI recibe el
+        # aviso ahí, que es donde se puede corregir en el momento.
+        self._users[username] = User(
+            username, hash_password(password), role,
+            unidades=list(unidades or []), matriz=matriz)
         self._save()
+
+    def set_unidades(self, username: str, unidades: list[str], *,
+                     matriz: bool | None = None) -> None:
+        """Cambia el alcance de un usuario ya creado."""
+
+        u = self._users.get(username)
+        if u is None:
+            raise AuthError(f"usuario '{username}' inexistente")
+        if matriz is not None:
+            u.matriz = matriz
+        u.unidades = list(unidades)
+        self._save()
+
+    def usuarios(self) -> list[User]:
+        return sorted(self._users.values(), key=lambda u: u.username)
 
     def set_password(self, username: str, password: str) -> None:
         if username not in self._users:
